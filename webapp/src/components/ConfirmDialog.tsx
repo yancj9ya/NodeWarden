@@ -1,4 +1,5 @@
 import type { ComponentChildren } from 'preact';
+import { Check, X } from 'lucide-preact';
 import { t } from '@/lib/i18n';
 
 interface ConfirmDialogProps {
@@ -28,9 +29,11 @@ export default function ConfirmDialog(props: ConfirmDialogProps) {
           className={`btn ${props.danger ? 'btn-danger' : 'btn-primary'} dialog-btn`}
           onClick={props.onConfirm}
         >
+          <Check size={14} className="btn-icon" />
           {props.confirmText || t('txt_yes')}
         </button>
         <button type="button" className="btn btn-secondary dialog-btn" onClick={props.onCancel}>
+          <X size={14} className="btn-icon" />
           {props.cancelText || t('txt_no')}
         </button>
         {props.afterActions}

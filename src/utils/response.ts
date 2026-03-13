@@ -1,40 +1,48 @@
 import { LIMITS } from '../config/limits';
 
 const CORS_METHODS = 'GET, POST, PUT, DELETE, PATCH, OPTIONS';
-const CORS_HEADERS = 'Content-Type, Authorization, Accept, Device-Type, Bitwarden-Client-Name, Bitwarden-Client-Version, X-Request-Email, X-Device-Identifier, X-Device-Name';
-
-function isTrustedClientOrigin(origin: string): boolean {
-  // Official browser extension / desktop-webview common origins.
-  if (origin.startsWith('chrome-extension://')) return true;
-  if (origin.startsWith('moz-extension://')) return true;
-  if (origin.startsWith('safari-web-extension://')) return true;
-  if (origin.startsWith('app://')) return true;
-  if (origin.startsWith('capacitor://')) return true;
-  if (origin.startsWith('ionic://')) return true;
-  return false;
-}
+const DEFAULT_CORS_HEADERS = [
+  'Content-Type',
+  'Authorization',
+  'Accept',
+  'Device-Type',
+  'Device-Identifier',
+  'Device-Name',
+  'Bitwarden-Client-Name',
+  'Bitwarden-Client-Version',
+  'Bitwarden-Package-Type',
+  'Is-Prerelease',
+  'X-Request-Email',
+  'X-Device-Identifier',
+  'X-Device-Name',
+];
 
 function getAllowedOrigin(request: Request): string | null {
   const origin = request.headers.get('Origin');
-  if (!origin) return null;
-
-  const targetOrigin = new URL(request.url).origin;
-  if (origin === targetOrigin) return origin;
-  if (isTrustedClientOrigin(origin)) return origin;
-  return null;
+  if (!origin) return '*';
+  return origin;
 }
 
 function buildCorsHeaders(request: Request): Record<string, string> {
+  const requestedHeaders = String(request.headers.get('Access-Control-Request-Headers') || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const allowHeaders = Array.from(new Set([...DEFAULT_CORS_HEADERS, ...requestedHeaders]));
+
   const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': CORS_METHODS,
-    'Access-Control-Allow-Headers': CORS_HEADERS,
+    'Access-Control-Allow-Headers': allowHeaders.join(', '),
+    'Access-Control-Expose-Headers': '*',
     'Access-Control-Max-Age': String(LIMITS.cors.preflightMaxAgeSeconds),
+    'Access-Control-Allow-Private-Network': 'true',
   };
 
   const allowedOrigin = getAllowedOrigin(request);
   if (allowedOrigin) {
     headers['Access-Control-Allow-Origin'] = allowedOrigin;
-    headers['Vary'] = 'Origin';
+    headers['Access-Control-Allow-Credentials'] = 'true';
+    headers['Vary'] = 'Origin, Access-Control-Request-Headers';
   }
 
   return headers;
@@ -44,6 +52,12 @@ export function applyCors(
   request: Request,
   response: Response
 ): Response {
+  // WebSocket upgrade responses must be returned untouched.
+  const webSocket = (response as Response & { webSocket?: unknown }).webSocket;
+  if (response.status === 101 || webSocket) {
+    return response;
+  }
+
   const headers = new Headers(response.headers);
   const corsHeaders = buildCorsHeaders(request);
   for (const [k, v] of Object.entries(corsHeaders)) {
@@ -104,14 +118,6 @@ export function identityErrorResponse(message: string, error: string = 'invalid_
 
 // Handle CORS preflight
 export function handleCors(request: Request): Response {
-  const origin = request.headers.get('Origin');
-  if (origin) {
-    const allowedOrigin = getAllowedOrigin(request);
-    if (!allowedOrigin) {
-      return new Response(null, { status: 403 });
-    }
-  }
-
   return new Response(null, {
     status: 204,
     headers: buildCorsHeaders(request),

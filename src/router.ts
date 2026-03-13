@@ -34,6 +34,9 @@ import {
   handleRestoreCipher,
   handlePartialUpdateCipher,
   handleBulkMoveCiphers,
+  handleBulkDeleteCiphers,
+  handleBulkPermanentDeleteCiphers,
+  handleBulkRestoreCiphers,
 } from './handlers/ciphers';
 
 // Folder handlers
@@ -42,7 +45,8 @@ import {
   handleGetFolder, 
   handleCreateFolder, 
   handleUpdateFolder, 
-  handleDeleteFolder 
+  handleDeleteFolder,
+  handleBulkDeleteFolders,
 } from './handlers/folders';
 
 // Send handlers
@@ -55,6 +59,7 @@ import {
   handleUploadSendFile,
   handleUpdateSend,
   handleDeleteSend,
+  handleBulkDeleteSends,
   handleRemoveSendPassword,
   handleRemoveSendAuth,
   handleAccessSend,
@@ -75,6 +80,7 @@ import {
   handleGetDevices,
   handleRevokeAllTrustedDevices,
   handleRevokeTrustedDevice,
+  handleDeleteAllDevices,
   handleDeleteDevice,
   handleUpdateDeviceToken
 } from './handlers/devices';
@@ -99,6 +105,14 @@ import {
   handleAdminSetUserStatus,
   handleAdminDeleteUser,
 } from './handlers/admin';
+import {
+  handleAdminExportBackup,
+  handleAdminImportBackup,
+} from './handlers/backup';
+import {
+  handleNotificationsHub,
+  handleNotificationsNegotiate,
+} from './handlers/notifications';
 
 function isSameOriginWriteRequest(request: Request): boolean {
   const targetOrigin = new URL(request.url).origin;
@@ -132,6 +146,18 @@ function getNwIconSvg(): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="NW icon"><rect x="4" y="4" width="88" height="88" rx="20" fill="#111418"/><text x="48" y="60" text-anchor="middle" font-size="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" letter-spacing="0.5" fill="#FFFFFF">NW</text></svg>`;
 }
 
+function isImportBypassRequest(request: Request, path: string, method: string): boolean {
+  if (request.headers.get('X-NodeWarden-Import') !== '1') return false;
+
+  if (method === 'POST') {
+    if (path === '/api/ciphers/import') return true;
+    if (/^\/api\/ciphers\/[a-f0-9-]+\/attachment\/v2$/i.test(path)) return true;
+    if (/^\/api\/ciphers\/[a-f0-9-]+\/attachment\/[a-f0-9-]+$/i.test(path)) return true;
+  }
+
+  return false;
+}
+
 function handleNwFavicon(): Response {
   return new Response(getNwIconSvg(), {
     status: 200,
@@ -163,7 +189,7 @@ function isValidIconHostname(hostname: string): boolean {
   });
 }
 
-// Icons handler - proxy to Bitwarden's official icon service
+// Icons handler - proxy to favicon.im
 async function handleGetIcon(request: Request, env: Env, hostname: string): Promise<Response> {
   try {
     void env;
@@ -179,8 +205,7 @@ async function handleGetIcon(request: Request, env: Env, hostname: string): Prom
       return cached;
     }
 
-    // Use Bitwarden's official icon service
-    const iconUrl = `https://icons.bitwarden.net/${normalizedHostname}/icon.png`;
+    const iconUrl = `https://favicon.im/${normalizedHostname}`;
     const resp = await fetch(iconUrl, {
       headers: { 'User-Agent': 'NodeWarden/1.0' },
       redirect: 'follow',
@@ -192,6 +217,9 @@ async function handleGetIcon(request: Request, env: Env, hostname: string): Prom
 
     if (resp.ok) {
       const body = await resp.arrayBuffer();
+      if (body.byteLength === 0) {
+        return new Response(null, { status: 204 });
+      }
       const iconResponse = new Response(body, {
         status: 200,
         headers: {
@@ -215,9 +243,23 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   const method = request.method;
   const clientId = getClientIdentifier(request);
 
-  async function enforcePublicRateLimit(): Promise<Response | null> {
+  async function enforcePublicRateLimit(
+    category: string = 'public',
+    maxRequests: number = LIMITS.rateLimit.publicRequestsPerMinute
+  ): Promise<Response | null> {
+    if (!clientId) {
+      return new Response(JSON.stringify({
+        error: 'Forbidden',
+        error_description: 'Client IP is required',
+      }), {
+        status: 403,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+    }
     const rateLimit = new RateLimitService(env.DB);
-    const check = await rateLimit.consumeBudget(`${clientId}:public`, LIMITS.rateLimit.publicRequestsPerMinute);
+    const check = await rateLimit.consumeBudget(`${clientId}:${category}`, maxRequests);
     if (check.allowed) return null;
     return new Response(JSON.stringify({
       error: 'Too many requests',
@@ -241,11 +283,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   try {
 
     // Reject oversized bodies before any path-specific parsing.
-    // File upload paths enforce their own limits and are exempt here.
-    const isFileUploadPath =
+    // Large file/archive upload paths enforce their own limits and are exempt here.
+    const isLargeUploadPath =
       /^\/api\/ciphers\/[a-f0-9-]+\/attachment\/[a-f0-9-]+$/i.test(path) ||
-      /^\/api\/sends\/[a-f0-9-]+\/file\/[a-f0-9-]+$/i.test(path);
-    if (!isFileUploadPath) {
+      /^\/api\/sends\/[a-f0-9-]+\/file\/[a-f0-9-]+$/i.test(path) ||
+      path === '/api/admin/backup/import';
+    if (!isLargeUploadPath) {
       const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
       if (contentLength > LIMITS.request.maxBodyBytes) {
         return errorResponse('Request body too large', 413);
@@ -254,11 +297,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     // Setup status
     if (path === '/setup/status' && method === 'GET') {
+      const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
+      if (blocked) return blocked;
       return handleSetupStatus(request, env);
     }
 
     // Web runtime config for static client bootstrap
     if (path === '/api/web/config' && method === 'GET') {
+      const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
+      if (blocked) return blocked;
       const jwtUnsafeReason = jwtSecretUnsafeReason(env);
       return jsonResponse({
         defaultKdfIterations: LIMITS.auth.defaultKdfIterations,
@@ -338,30 +385,27 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return handleDownloadSendFile(request, env, sendId, fileId);
     }
 
-    // Notifications hub (stub - no auth required, return 200 for connection)
-    if (path.startsWith('/notifications/')) {
-      const blocked = await enforcePublicRateLimit();
-      if (blocked) return blocked;
-      return new Response(null, { status: 200 });
+    // Identity endpoints (no auth required)
+    if (path === '/identity/connect/token' && method === 'POST') {
+      return handleToken(request, env);
     }
 
-    // Known device check (no auth required)
+    // Known device check (no auth required).
     if (path === '/api/devices/knowndevice' && method === 'GET') {
       const blocked = await enforcePublicRateLimit();
       if (blocked) return jsonResponse(false);
       return handleKnownDevice(request, env);
     }
 
-    // Identity endpoints (no auth required)
-    if (path === '/identity/connect/token' && method === 'POST') {
-      return handleToken(request, env);
-    }
-
     if ((path === '/identity/connect/revocation' || path === '/identity/connect/revoke') && method === 'POST') {
+      const blocked = await enforcePublicRateLimit('public-sensitive', LIMITS.rateLimit.sensitivePublicRequestsPerMinute);
+      if (blocked) return blocked;
       return handleRevocation(request, env);
     }
 
     if (path === '/identity/accounts/prelogin' && method === 'POST') {
+      const blocked = await enforcePublicRateLimit('public-sensitive', LIMITS.rateLimit.sensitivePublicRequestsPerMinute);
+      if (blocked) return blocked;
       return handlePrelogin(request, env);
     }
 
@@ -374,6 +418,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // They also tolerate different casing, but their response models use PascalCase.
     const isConfigRequest = (path === '/config' || path === '/api/config') && method === 'GET';
     if (isConfigRequest) {
+      const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
+      if (blocked) return blocked;
       const origin = url.origin;
       return jsonResponse({
         // ── Version Strategy (Plan E) ──────────────────────────────────────
@@ -414,6 +460,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     // Version endpoint (some clients probe this to validate the server)
     if (path === '/api/version' && method === 'GET') {
+      const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
+      if (blocked) return blocked;
       return jsonResponse(LIMITS.compatibility.bitwardenServerVersion);  // Always same value as /config.version
     }
 
@@ -421,6 +469,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // - first user can self-register and becomes admin
     // - later registrations require inviteCode in request body
     if (path === '/api/accounts/register' && method === 'POST') {
+      const blocked = await enforcePublicRateLimit('register', LIMITS.rateLimit.registerRequestsPerMinute);
+      if (blocked) return blocked;
       if (!isSameOriginWriteRequest(request)) {
         return errorResponse('Forbidden origin', 403);
       }
@@ -433,6 +483,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return errorResponse('Server configuration error: JWT_SECRET is not set or too weak', 500);
     }
 
+    if (path === '/notifications/hub/negotiate' && method === 'POST') {
+      return handleNotificationsNegotiate(request, env);
+    }
+
+    if (path === '/notifications/hub' && method === 'GET') {
+      return handleNotificationsHub(request, env);
+    }
+
     // All other API endpoints require authentication
     const auth = new AuthService(env);
     const authHeader = request.headers.get('Authorization');
@@ -440,6 +498,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (!payload) {
       return errorResponse('Unauthorized', 401);
+    }
+
+    const actingDeviceId = String(payload.did || '').trim();
+    if (actingDeviceId) {
+      const nextHeaders = new Headers(request.headers);
+      nextHeaders.set('X-NodeWarden-Acting-Device-Id', actingDeviceId);
+      request = new Request(request, { headers: nextHeaders });
     }
 
     const userId = payload.sub;
@@ -452,7 +517,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return errorResponse('Account is disabled', 403);
     }
     // Unified rate limiting for all authenticated API requests.
-    {
+    if (!isImportBypassRequest(request, path, method)) {
       const rateLimit = new RateLimitService(env.DB);
       const rateLimitCheck = await rateLimit.consumeBudget(
         userId + ':api',
@@ -525,6 +590,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return handleSync(request, env, userId);
     }
 
+    if (path.startsWith('/notifications/')) {
+      return errorResponse('Not found', 404);
+    }
+
     // Cipher endpoints
     if (path === '/api/ciphers' || path === '/api/ciphers/create') {
       if (method === 'GET') return handleGetCiphers(request, env, userId);
@@ -534,6 +603,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // Ciphers import endpoint (Bitwarden client format)
     if (path === '/api/ciphers/import' && method === 'POST') {
       return handleCiphersImport(request, env, userId);
+    }
+
+    if (path === '/api/ciphers/delete' && method === 'POST') {
+      return handleBulkDeleteCiphers(request, env, userId);
+    }
+
+    if (path === '/api/ciphers/delete-permanent' && method === 'POST') {
+      return handleBulkPermanentDeleteCiphers(request, env, userId);
+    }
+
+    if (path === '/api/ciphers/restore' && method === 'POST') {
+      return handleBulkRestoreCiphers(request, env, userId);
     }
 
     // Bulk cipher operations (only move is allowed)
@@ -613,6 +694,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (method === 'GET') return handleGetFolders(request, env, userId);
       if (method === 'POST') return handleCreateFolder(request, env, userId);
     }
+    if (path === '/api/folders/delete' && method === 'POST') {
+      return handleBulkDeleteFolders(request, env, userId);
+    }
 
     // Match /api/folders/:id patterns
     const folderMatch = path.match(/^\/api\/folders\/([a-f0-9-]+)$/i);
@@ -646,6 +730,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (path === '/api/sends') {
       if (method === 'GET') return handleGetSends(request, env, userId);
       if (method === 'POST') return handleCreateSend(request, env, userId);
+    }
+
+    if (path === '/api/sends/delete' && method === 'POST') {
+      return handleBulkDeleteSends(request, env, userId);
     }
 
     if ((path === '/api/sends/file/v2' || path === '/api/sends/file') && method === 'POST') {
@@ -705,8 +793,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
 
     // Devices endpoint
-    if (path === '/api/devices' && method === 'GET') {
-      return handleGetDevices(request, env, userId);
+    if (path === '/api/devices') {
+      if (method === 'GET') return handleGetDevices(request, env, userId);
+      if (method === 'DELETE') return handleDeleteAllDevices(request, env, userId);
     }
 
     if (path === '/api/devices/authorized') {
@@ -729,6 +818,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // Admin endpoints
     if (path === '/api/admin/users' && method === 'GET') {
       return handleAdminListUsers(request, env, currentUser);
+    }
+
+    if (path === '/api/admin/backup/export' && method === 'POST') {
+      return handleAdminExportBackup(request, env, currentUser);
+    }
+
+    if (path === '/api/admin/backup/import' && method === 'POST') {
+      return handleAdminImportBackup(request, env, currentUser);
     }
 
     if (path === '/api/admin/invites') {

@@ -8,7 +8,6 @@
 
 [![Powered by Cloudflare](https://img.shields.io/badge/Powered%20by-Cloudflare-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-2ea44f)](./LICENSE)
-[![Deploy to Cloudflare Workers](https://img.shields.io/badge/Deploy%20to-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
 [![Latest Release](https://img.shields.io/github/v/release/shuaiplus/NodeWarden?display_name=tag)](https://github.com/shuaiplus/NodeWarden/releases/latest)
 [![Sync Upstream](https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml/badge.svg)](https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml)
 
@@ -29,19 +28,18 @@
 | Web Vault (logins/notes/cards/identities) | ✅ | ✅ | Web-based vault management UI |
 | Folders / Favorites | ✅ | ✅ | Common vault organization supported |
 | Full sync `/api/sync` | ✅ | ✅ | Compatibility and performance optimized |
-| Attachment upload/download | ✅ | ✅ | Backed by Cloudflare R2 |
-| Import flow (common clients) | ✅ | ✅ | Common import paths covered |
+| Attachment upload/download | ✅ | ✅ | Choose either Cloudflare R2 or KV |
+| Import / export | ✅ | ✅ | Fully implemented, including Bitwarden vault + attachments ZIP import |
 | Website icon proxy | ✅ | ✅ | Via `/icons/{hostname}/icon.png` |
-| passkey、TOTP fields | ❌ | ✅ | Official service requires premium; NodeWarden does not |
+| passkey / TOTP fields | ✅ | ✅ | Fully supported, no premium required |
+| Send | ✅ | ✅ | Choose either Cloudflare R2 or KV |
 | Multi-user | ✅ | ✅ | Full user management with invitation mechanism |
-| Send | ✅ | ✅ | Text Send and File Send are supported |
 | Organizations / Collections / Member roles | ✅ | ❌ | Not necessary to implement |
 | Login 2FA (TOTP/WebAuthn/Duo/Email) | ✅ | ⚠️ Partial | User-level TOTP only |
 | SSO / SCIM / Enterprise directory | ✅ | ❌ | Not necessary to implement |
 | Emergency access | ✅ | ❌ | Not necessary to implement |
 | Admin console / Billing & subscription | ✅ | ❌ | Free only |
 | Full push notification pipeline | ✅ | ❌ | Not necessary to implement |
-
 
 ## Tested clients / platforms
 
@@ -53,23 +51,22 @@
 
 ---
 
-# Quick start
+## Web deploy
 
-### One-click deploy
+1. Fork this repository. If you find this project helpful, please consider giving it a Star.
+2. Open [Workers](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create) -> `Continue with GitHub` -> select your forked repository (`NodeWarden`) -> `Next` -> (R2 storage is used by default; if R2 is unavailable for your account, switch to KV and change the deploy command to `npm run deploy:kv`) -> deploy -> open the generated URL.
 
-**Deploy steps:**
+| Storage | Card required | Single attachment / Send file limit | Free tier |
+|---|---|---|---|
+| R2 | Yes | 100 MB (soft limit, can be changed) | 10 GB |
+| KV | No | 25 MiB (Cloudflare limit, cannot be changed) | 1 GB |
 
-1. Fork this repository and name it **NodeWarden**.
-2. Click the deploy button below, rename the project to **NodeWarden2**, and set **JWT_SECRET** to a 32-character random string.
-3. [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/nodewarden)
-4. After deployment, open the Workers settings on the same page and disconnect the **Git repository**.
-5. From the same location, reconnect the **Git repository** to the fork you created in step 1.
+> [!TIP] 
+> Sync upstream (keep your fork updated):
+>- Manual: open your fork on GitHub, click `Sync fork`, then click `Update branch`.
+>- Automatic: in your fork, go to `Actions` -> `Sync upstream` -> `Enable workflow`. It will automatically sync from upstream every day at 3 AM.
 
-**Sync upstream (update):**
-- Manual: Open your forked repository on GitHub and click **Sync fork** when the sync prompt appears at the top.
-- Automatic: Go to your fork → Actions, click "I understand my workflows, go ahead and enable them". The repository will auto-sync with upstream every day at 3 AM.
-
-### CLI deploy 
+## CLI deploy 
 
 ```powershell
 # Clone repository
@@ -82,27 +79,20 @@ npm install
 # Cloudflare CLI login
 npx wrangler login
 
-# Create cloud resources (D1 + R2)
-npx wrangler d1 create nodewarden-db
-npx wrangler r2 bucket create nodewarden-attachments
-
-# Deploy
+# Deploy to Cloudflare
 npm run deploy 
 
-# To update later: re-clone and re-deploy — no need to recreate cloud resources
+# (Optional) KV mode (no R2 / no credit card)
+npm run deploy:kv
+
+# Local development
+npm run dev
+npm run dev:kv
+
+# To update later, pull the repository again and redeploy
 git clone https://github.com/shuaiplus/NodeWarden.git
 cd NodeWarden
 npm run deploy 
-```
-
----
-## Local development
-
-This repo is a Cloudflare Workers TypeScript project (Wrangler).
-
-```bash
-npm install
-npm run dev
 ```
 ---
 
@@ -110,6 +100,10 @@ npm run dev
 
 **Q: How do I back up my data?**  
 A: Use **Export vault** in your client and save the JSON file.
+
+**Q: Which import/export formats are supported?**  
+A: NodeWarden supports Bitwarden `json/csv/vault + attachments zip` and NodeWarden `vault + attachments json` in both plain and encrypted modes, and every format visible in the import selector is directly importable.  
+A: It also supports direct import of Bitwarden `vault + attachments zip`, which is not directly supported by official Bitwarden Web import.
 
 **Q: What if I forget the master password?**  
 A: It can’t be recovered (end-to-end encryption). Keep it safe.

@@ -1,4 +1,4 @@
-type Locale = 'en' | 'zh-CN';
+﻿type Locale = 'en' | 'zh-CN';
 
 const LOCALE_STORAGE_KEY = 'nodewarden.locale';
 
@@ -15,6 +15,23 @@ const messages: Record<Locale, Record<string, string>> = {
     backup_strategy_under_construction: "Under construction.",
     import_export_title: "Import & Export",
     import_export_under_construction: "Under construction.",
+    txt_backup_export: "Backup Export",
+    txt_backup_import: "Backup Import",
+    txt_backup_export_description: "Download a full instance backup ZIP for manual safekeeping.",
+    txt_backup_import_description: "Upload a previously exported backup ZIP and restore it into a fresh instance shell.",
+    txt_backup_exporting: "Exporting...",
+    txt_backup_importing: "Importing...",
+    txt_backup_export_success: "Backup exported",
+    txt_backup_import_success_relogin: "Backup imported. Please sign in again.",
+    txt_backup_export_failed: "Backup export failed",
+    txt_backup_import_failed: "Backup import failed",
+    txt_backup_file: "Backup File",
+    txt_backup_file_required: "Please select a backup file",
+    txt_backup_no_file_selected: "No backup file selected",
+    txt_backup_selected_file_name: "Selected file: {name}",
+    txt_backup_replace_confirm_title: "Replace Current Instance Data",
+    txt_backup_replace_confirm_message: "The current instance already contains data. Clear it and import the new backup?",
+    txt_backup_clear_and_import: "Clear and Import",
     txt_access_count: "Access Count",
     txt_accessed_count_times: "Accessed {count} times",
     txt_actions: "Actions",
@@ -27,12 +44,13 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_address_1: "Address 1",
     txt_address_2: "Address 2",
     txt_address_3: "Address 3",
-    txt_all_device_authorizations_revoked: "All device authorizations revoked",
+    txt_all_device_authorizations_revoked: "All device trust revoked",
     txt_all_invites_deleted: "All invites deleted",
     txt_all_items: "All Items",
     txt_all_sends: "All Sends",
     txt_android: "Android",
     txt_are_you_sure_you_want_to_delete_count_selected_items: "Are you sure you want to delete {count} selected items?",
+    txt_are_you_sure_you_want_to_delete_count_selected_items_permanently: "Are you sure you want to permanently delete {count} selected items?",
     txt_are_you_sure_you_want_to_delete_this_item: "Are you sure you want to delete this item?",
     txt_are_you_sure_you_want_to_log_out: "Are you sure you want to log out?",
     txt_authenticator_key: "Authenticator Key",
@@ -44,6 +62,8 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_boolean: "Boolean",
     txt_brand: "Brand",
     txt_bulk_delete_failed: "Bulk delete failed",
+    txt_bulk_permanent_delete_failed: "Bulk permanent delete failed",
+    txt_bulk_restore_failed: "Bulk restore failed",
     txt_bulk_delete_sends_failed: "Bulk delete sends failed",
     txt_bulk_move_failed: "Bulk move failed",
     txt_cancel: "Cancel",
@@ -65,6 +85,7 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_confirm_master_password: "Confirm Master Password",
     txt_confirm_password: "Confirm Password",
     txt_copy: "Copy",
+    txt_code_copied: "Code copied",
     txt_copy_code: "Copy Code",
     txt_copy_link: "Copy Link",
     txt_copy_secret: "Copy Secret",
@@ -88,19 +109,24 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_delete_all_invites: "Delete all invites",
     txt_delete_item: "Delete Item",
     txt_delete_item_failed: "Delete item failed",
+    txt_delete_permanently: "Delete Permanently",
     txt_delete_selected: "Delete Selected",
     txt_delete_selected_items: "Delete Selected Items",
+    txt_delete_selected_items_permanently: "Delete Selected Items Permanently",
     txt_delete_send_failed: "Delete send failed",
     txt_delete_this_user_and_all_user_data: "Delete this user and all user data?",
     txt_delete_user: "Delete user",
     txt_deleted_selected_items: "Deleted selected items",
+    txt_deleted_selected_items_permanently: "Permanently deleted selected items",
+    txt_restored_selected_items: "Restored selected items",
     txt_deleted_selected_sends: "Deleted selected sends",
     txt_deletion_date: "Deletion Date",
     txt_deletion_days: "Deletion Days",
     txt_device: "Device",
-    txt_device_authorization_revoked: "Device authorization revoked",
+    txt_device_authorization_revoked: "Device trust revoked",
     txt_device_management: "Device Management",
     txt_device_removed: "Device removed",
+    txt_load_devices_failed: "Failed to load devices",
     txt_disable_this_send: "Disable this send",
     txt_disable_totp: "Disable TOTP",
     txt_disable_totp_failed: "Disable TOTP failed",
@@ -153,7 +179,7 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_identity: "Identity",
     txt_identity_details: "Identity Details",
     txt_ie_browser: "IE Browser",
-    txt_invite_code_optional: "Invite Code (Optional)",
+    txt_invite_code_optional: "Invite Code (Not required for the first account; required for all others)",
     txt_invite_created: "Invite created",
     txt_invite_revoked: "Invite revoked",
     txt_invite_validity_hours: "Invite validity (hours)",
@@ -200,12 +226,16 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_log_in: "Log In",
     txt_log_out: "Log Out",
     txt_lock: "Lock",
+    txt_menu: "Menu",
+    txt_settings: "Settings",
+    txt_back: "Back",
     txt_login: "Login",
     txt_login_credentials: "Login Credentials",
     txt_login_failed: "Login failed",
     txt_login_success: "Login success",
     txt_macos_desktop: "macOS Desktop",
     txt_manage_authorized_devices_and_30_day_totp_trusted_sessions: "Manage authorized devices and 30-day TOTP trusted sessions.",
+    txt_manage_device_sessions_and_30_day_totp_trusted_sessions: "Manage device sessions and 30-day TOTP trusted sessions.",
     txt_master_password: "Master Password",
     txt_master_password_changed_please_login_again: "Master password changed. Please login again.",
     txt_master_password_is_required: "Master password is required",
@@ -229,6 +259,8 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_no_devices_found: "No devices found.",
     txt_no_folder: "No Folder",
     txt_no_items: "No items",
+    txt_no_username: "(No username)",
+    txt_no_verification_codes: "No verification codes",
     txt_no_name: "(No Name)",
     txt_no_sends: "No sends",
     txt_nodewarden_send: "NodeWarden Send",
@@ -271,14 +303,21 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_remove: "Remove",
     txt_remove_device: "Remove device",
     txt_remove_device_2: "Remove Device",
+    txt_remove_all_devices: "Remove all devices",
+    txt_remove_all_devices_and_clear_all_2fa_trust: "Remove all devices and clear all 2FA trust?",
+    txt_remove_all_devices_and_sign_out_all_sessions: "Remove all devices, clear all trust, and sign out every device?",
     txt_remove_device_name_and_clear_its_2fa_trust: "Remove device \"{name}\" and clear its 2FA trust?",
+    txt_remove_device_and_sign_out_name: "Remove device \"{name}\", clear its trust, and sign it out?",
     txt_reveal: "Reveal",
+    txt_restore: "Restore",
     txt_revoke: "Revoke",
     txt_revoke_30_day_totp_trust_for_name: "Revoke 30-day TOTP trust for \"{name}\"?",
     txt_revoke_30_day_totp_trust_from_all_devices: "Revoke 30-day TOTP trust from all devices?",
     txt_revoke_all_trusted: "Revoke All Trusted",
-    txt_revoke_all_trusted_devices: "Revoke all trusted devices",
-    txt_revoke_device_authorization: "Revoke device authorization",
+    txt_revoke_all_trusted_devices: "Revoke all device trust",
+    txt_revoke_device_authorization: "Revoke device trust",
+    txt_revoke_device_trust_failed: "Failed to revoke device trust",
+    txt_revoke_all_device_trust_failed: "Failed to revoke all device trust",
     txt_revoke_trust: "Revoke Trust",
     txt_role: "Role",
     txt_save: "Save",
@@ -286,6 +325,10 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_save_profile_failed: "Save profile failed",
     txt_search_sends: "Search sends...",
     txt_search_your_secure_vault: "Search your secure vault...",
+    txt_sort: "Sort",
+    txt_sort_last_edited: "Modified",
+    txt_sort_created: "Created",
+    txt_sort_name: "A-Z",
     txt_secret_and_code_are_required: "Secret and code are required",
     txt_secret_copied: "Secret copied",
     txt_secure_note: "Secure Note",
@@ -304,6 +347,8 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_ssn: "SSN",
     txt_state_province: "State / Province",
     txt_status: "Status",
+    txt_online: "Online",
+    txt_offline: "Offline",
     txt_submit: "Submit",
     txt_sync: "Sync",
     txt_sync_vault: "Sync Vault",
@@ -324,10 +369,15 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_totp_disabled: "TOTP disabled",
     txt_totp_enabled: "TOTP enabled",
     txt_totp_is_enabled_for_this_account: "TOTP is enabled for this account.",
+    txt_total_items_count: "{count} items",
     txt_totp_secret: "TOTP Secret",
     txt_totp_verify_failed: "TOTP verify failed",
     txt_passkey: "Passkey",
     txt_passkey_created_at_value: "Created at {value}",
+    txt_attachments: "Attachments",
+    txt_upload_attachments: "Upload attachments",
+    txt_new_attachments: "New attachments",
+    txt_marked_for_removal_count: "{count} attachment(s) will be removed on save",
     txt_trash: "Trash",
     txt_trust_this_device_for_30_days: "Trust this device for 30 days",
     txt_trusted_until: "Trusted Until",
@@ -345,6 +395,9 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_unlock_send: "Unlock Send",
     txt_unlock_vault: "Unlock Vault",
     txt_unlocked: "Unlocked",
+    txt_all_devices_removed: "All devices removed",
+    txt_remove_device_failed: "Failed to remove device",
+    txt_remove_all_devices_failed: "Failed to remove all devices",
     txt_update_item_failed: "Update item failed",
     txt_update_send_failed: "Update send failed",
     txt_use_recovery_code: "Use Recovery Code",
@@ -367,9 +420,9 @@ const messages: Record<Locale, Record<string, string>> = {
 };
 
 const zhCNOverrides: Record<string, string> = {
-  nav_my_vault: '我的保险库',
+  nav_my_vault: '我的密码库',
   nav_sends: 'Send',
-  nav_admin_panel: '管理面板',
+  nav_admin_panel: '用户管理',
   nav_account_settings: '账户设置',
   nav_device_management: '设备管理',
   nav_backup_strategy: '备份策略',
@@ -378,13 +431,30 @@ const zhCNOverrides: Record<string, string> = {
   backup_strategy_under_construction: '正在搭建中',
   import_export_title: '导入导出',
   import_export_under_construction: '正在搭建中',
+  txt_backup_export: '备份导出',
+  txt_backup_import: '备份导入',
+  txt_backup_export_description: '下载一个完整的实例备份 ZIP，手动保管即可。',
+  txt_backup_import_description: '上传之前导出的备份 ZIP，并恢复到全新实例空壳。',
+  txt_backup_exporting: '正在导出...',
+  txt_backup_importing: '正在导入...',
+  txt_backup_export_success: '备份已导出',
+  txt_backup_import_success_relogin: '备份已导入，请重新登录',
+  txt_backup_export_failed: '备份导出失败',
+  txt_backup_import_failed: '备份导入失败',
+  txt_backup_file: '备份文件',
+  txt_backup_file_required: '请选择备份文件',
+  txt_backup_no_file_selected: '尚未选择备份文件',
+  txt_backup_selected_file_name: '已选择文件：{name}',
+  txt_backup_replace_confirm_title: '替换当前实例数据',
+  txt_backup_replace_confirm_message: '当前实例里已经有数据。要先清空当前数据库和文件，再导入新的备份吗？',
+  txt_backup_clear_and_import: '清空后导入',
   txt_sign_out: '退出登录',
   txt_log_in: '登录',
   txt_log_out: '退出',
   txt_create_account: '创建账户',
   txt_back_to_login: '返回登录',
   txt_unlock: '解锁',
-  txt_unlock_vault: '解锁保险库',
+  txt_unlock_vault: '解锁密码库',
   txt_master_password: '主密码',
   txt_email: '邮箱',
   txt_name: '名称',
@@ -398,7 +468,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_loading: '加载中...',
   txt_loading_nodewarden: '正在加载 NodeWarden...',
   txt_search_sends: '搜索发送...',
-  txt_search_your_secure_vault: '搜索你的保险库...',
+  txt_search_your_secure_vault: '搜索你的密码库...',
   txt_refresh: '刷新',
   txt_sync: '同步',
   txt_sync_vault: '同步',
@@ -409,6 +479,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_confirm: '确认',
   txt_move: '移动',
   txt_copy: '复制',
+  txt_code_copied: '验证码已复制',
   txt_copy_link: '复制链接',
   txt_select_all: '全选',
   txt_delete_selected: '删除所选',
@@ -419,6 +490,8 @@ const zhCNOverrides: Record<string, string> = {
   txt_folders: '文件夹',
   txt_no_folder: '无文件夹',
   txt_no_items: '没有项目',
+  txt_no_username: '无用户名',
+  txt_no_verification_codes: '没有验证码',
   txt_no_sends: '没有发送',
   txt_select_an_item: '请选择一个项目',
   txt_login: '登录',
@@ -443,6 +516,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_open: '打开',
   txt_hide: '隐藏',
   txt_reveal: '显示',
+  txt_restore: '恢复',
   txt_favorite: '收藏',
   txt_field: '字段',
   txt_field_type: '字段类型',
@@ -543,15 +617,22 @@ const zhCNOverrides: Record<string, string> = {
   txt_copy_secret: '复制密钥',
   txt_this_is_a_one_time_code_after_it_is_used_a_new_code_is_generated_automatically: '这是一次性恢复代码，使用后将自动生成新的恢复代码。',
   txt_manage_authorized_devices_and_30_day_totp_trusted_sessions: '管理已授权设备和 30 天 TOTP 受信会话。',
+  txt_manage_device_sessions_and_30_day_totp_trusted_sessions: '管理设备会话和 30 天 TOTP 受信状态。',
   txt_role: '角色',
   txt_status: '状态',
+  txt_online: '在线',
+  txt_offline: '离线',
   txt_actions: '操作',
   txt_type: '类型',
   txt_revoke_all_trusted: '撤销全部受信任设备',
-  txt_revoke_all_trusted_devices: '撤销所有受信任设备',
+  txt_revoke_all_trusted_devices: '撤销所有设备信任',
   txt_revoke_30_day_totp_trust_from_all_devices: '确认撤销所有设备的 30 天 TOTP 信任吗？',
   txt_revoke_30_day_totp_trust_for_name: '确认撤销“{name}”的 30 天 TOTP 信任吗？',
   txt_remove_device_name_and_clear_its_2fa_trust: '确认移除设备“{name}”并清除其 2FA 信任吗？',
+  txt_remove_all_devices: '移除所有设备',
+  txt_remove_all_devices_and_clear_all_2fa_trust: '确认移除所有设备并清除全部 2FA 信任吗？',
+  txt_remove_all_devices_and_sign_out_all_sessions: '确认移除所有设备、清除全部信任，并让所有设备重新登录吗？',
+  txt_remove_device_and_sign_out_name: '确认移除设备“{name}”、清除其信任，并让它重新登录吗？',
   txt_role_admin: '管理员',
   txt_role_user: '用户',
   txt_status_active: '正常',
@@ -564,15 +645,18 @@ const zhCNOverrides: Record<string, string> = {
   txt_address_1: '地址 1',
   txt_address_2: '地址 2',
   txt_address_3: '地址 3',
-  txt_all_device_authorizations_revoked: '已撤销所有设备授权',
+  txt_all_device_authorizations_revoked: '已撤销所有设备信任',
   txt_all_invites_deleted: '已删除所有邀请码',
   txt_all_sends: '所有发送',
   txt_android: '安卓',
   txt_are_you_sure_you_want_to_delete_count_selected_items: '确认删除所选的 {count} 个项目？',
+  txt_are_you_sure_you_want_to_delete_count_selected_items_permanently: '确认永久删除所选的 {count} 个项目？',
   txt_are_you_sure_you_want_to_delete_this_item: '确认删除此项目？',
   txt_authenticator_key: '验证器密钥',
   txt_brand: '品牌',
   txt_bulk_delete_failed: '批量删除失败',
+  txt_bulk_permanent_delete_failed: '批量永久删除失败',
+  txt_bulk_restore_failed: '批量恢复失败',
   txt_bulk_delete_sends_failed: '批量删除发送失败',
   txt_bulk_move_failed: '批量移动失败',
   txt_cardholder_name: '持卡人姓名',
@@ -593,13 +677,17 @@ const zhCNOverrides: Record<string, string> = {
   txt_delete_all_invite_codes_active_inactive: '删除所有邀请码（有效/无效）？',
   txt_delete_all_invites: '删除所有邀请码',
   txt_delete_item_failed: '删除项目失败',
+  txt_delete_permanently: '永久删除',
   txt_delete_send_failed: '删除发送失败',
   txt_delete_this_user_and_all_user_data: '删除此用户及其所有数据？',
   txt_delete_user: '删除用户',
   txt_deleted_selected_items: '已删除所选项目',
+  txt_deleted_selected_items_permanently: '已永久删除所选项目',
+  txt_restored_selected_items: '已恢复所选项目',
   txt_deleted_selected_sends: '已删除所选发送',
-  txt_device_authorization_revoked: '已撤销设备授权',
+  txt_device_authorization_revoked: '设备信任已撤销',
   txt_device_removed: '设备已移除',
+  txt_load_devices_failed: '加载设备失败',
   txt_disable_totp_failed: '禁用 TOTP 失败',
   txt_download_failed: '下载失败',
   txt_edge_browser: 'Edge 浏览器',
@@ -621,7 +709,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_folder_created: '文件夹已创建',
   txt_folder_name_is_required: '文件夹名称不能为空',
   txt_ie_browser: 'IE 浏览器',
-  txt_invite_code_optional: '邀请码（可选）',
+  txt_invite_code_optional: '邀请码（首位注册者无需填写，其他人必填）',
   txt_invite_created: '邀请码已创建',
   txt_invite_revoked: '邀请码已撤销',
   txt_ios: 'iOS',
@@ -667,12 +755,18 @@ const zhCNOverrides: Record<string, string> = {
   txt_registration_succeeded_please_sign_in: '注册成功，请登录',
   txt_remove_device: '移除设备',
   txt_revoke: '撤销',
-  txt_revoke_device_authorization: '撤销设备授权',
+  txt_revoke_device_authorization: '撤销设备信任',
+  txt_revoke_device_trust_failed: '撤销设备信任失败',
+  txt_revoke_all_device_trust_failed: '撤销所有设备信任失败',
   txt_save_profile_failed: '保存资料失败',
   txt_secret_and_code_are_required: '密钥和代码不能为空',
   txt_secret_copied: '密钥已复制',
   txt_security_code: '安全码',
   txt_security_code_cvv: '安全码 (CVV)',
+  txt_sort: '排序',
+  txt_sort_last_edited: '最近修改',
+  txt_sort_created: '最近创建',
+  txt_sort_name: 'A-Z',
   txt_send_created: '发送已创建',
   txt_send_deleted: '发送已删除',
   txt_send_file: '发送文件',
@@ -688,6 +782,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_totp_disabled: 'TOTP 已禁用',
   txt_totp_enabled: 'TOTP 已启用',
   txt_totp_is_enabled_for_this_account: '此账户已启用 TOTP。',
+  txt_total_items_count: '共 {count} 项',
   txt_totp_verify_failed: 'TOTP 验证失败',
   txt_trust_this_device_for_30_days: '信任此设备 30 天',
   txt_type_type: '类型 {type}',
@@ -695,12 +790,15 @@ const zhCNOverrides: Record<string, string> = {
   txt_unlock_failed: '解锁失败',
   txt_unlock_failed_master_password_is_incorrect: '解锁失败，主密码不正确。',
   txt_unlocked: '已解锁',
+  txt_all_devices_removed: '已移除所有设备',
+  txt_remove_device_failed: '移除设备失败',
+  txt_remove_all_devices_failed: '移除所有设备失败',
   txt_update_item_failed: '更新项目失败',
   txt_update_send_failed: '更新发送失败',
   txt_use_your_one_time_recovery_code_to_disable_two_step_verification: '使用一次性恢复代码禁用两步验证。',
   txt_user_deleted: '用户已删除',
   txt_user_status_updated: '用户状态已更新',
-  txt_vault_synced: '保险库已同步',
+  txt_vault_synced: '密码库已同步',
   txt_verify: '验证',
   txt_web: '网页',
   txt_windows_desktop: 'Windows 桌面端',
@@ -729,9 +827,146 @@ const zhCNOverrides: Record<string, string> = {
   txt_copied: '已复制',
 };
 
-zhCNOverrides.txt_lock = '\u9501\u5b9a';
+zhCNOverrides.txt_lock = '锁定';
+zhCNOverrides.txt_menu = '菜单';
+zhCNOverrides.txt_settings = '设置';
+zhCNOverrides.txt_back = '返回';
 zhCNOverrides.txt_passkey = 'Passkey';
-zhCNOverrides.txt_passkey_created_at_value = '\u521b\u5efa\u4e8e {value}';
+zhCNOverrides.txt_passkey_created_at_value = '创建于 {value}';
+zhCNOverrides.txt_attachments = '附件';
+zhCNOverrides.txt_upload_attachments = '上传附件';
+zhCNOverrides.txt_new_attachments = '待上传附件';
+zhCNOverrides.txt_marked_for_removal_count = '保存后将删除 {count} 个附件';
+messages.en.txt_import = 'Import';
+messages.en.txt_export = 'Export';
+messages.en.txt_format = 'Format';
+messages.en.txt_source_file = 'Source file';
+messages.en.txt_folder_handling = 'Folder handling';
+messages.en.txt_import_folder_mode_original = 'Original path from import file';
+messages.en.txt_import_folder_mode_none = 'No folder';
+messages.en.txt_import_folder_mode_target = 'One selected folder';
+messages.en.txt_target_folder = 'Target folder';
+messages.en.txt_select_folder_placeholder = '-- Select folder --';
+messages.en.txt_import_vault_data_hint = 'Import vault data into your current account.';
+messages.en.txt_export_vault_data_hint = 'Export vault data from your current account.';
+messages.en.txt_import_export_title = 'Import & Export';
+messages.en.txt_encrypted_mode = 'Encrypted mode';
+messages.en.txt_account_verification = 'Account verification';
+messages.en.txt_password_verification = 'Password verification';
+messages.en.txt_file_password = 'File password';
+messages.en.txt_zip_password_optional = 'ZIP password (optional)';
+messages.en.txt_zip_password = 'ZIP password';
+messages.en.txt_close = 'Close';
+messages.en.txt_total = 'Total';
+messages.en.txt_import_success = 'Import successful';
+messages.en.txt_import_success_number_of_items = 'Imported {count} item(s) in total.';
+messages.en.txt_import_attachment_summary = 'Imported {imported} of {total} attachment(s).';
+messages.en.txt_import_failed_attachments_title = '{count} attachment(s) were not imported:';
+messages.en.txt_import_attachment_target_not_found = 'Matching imported item not found.';
+messages.en.txt_upload_attachment_failed = 'Attachment upload failed.';
+messages.en.txt_import_file_password_required = 'Please enter file password.';
+messages.en.txt_import_invalid_zip_password = 'Invalid ZIP password.';
+messages.en.txt_export_completed = 'Export completed';
+messages.en.txt_export_failed = 'Export failed';
+messages.en.txt_import_invalid_password_protected_file = 'Invalid password-protected export file.';
+messages.en.txt_import_decrypt_failed = 'Failed to decrypt import file.';
+messages.en.txt_import_empty_zip_archive = 'Empty zip archive.';
+messages.en.txt_import_no_json_found_in_zip = 'No importable JSON data found in zip archive.';
+messages.en.txt_import_data_json_not_found = 'data.json not found in zip archive.';
+messages.en.txt_import_zip_password_required = 'ZIP password is required.';
+messages.en.txt_import_invalid_json_file = 'Invalid JSON file';
+messages.en.txt_import_failed = 'Import failed';
+messages.en.txt_import_encrypted_file_title = 'Import encrypted file';
+messages.en.txt_import_encrypted_file_message = 'This Bitwarden export is password-protected. Enter the export file password to continue.';
+messages.en.txt_import_encrypted_zip_title = 'Import encrypted ZIP';
+messages.en.txt_import_encrypted_zip_message = 'This ZIP archive is password-protected. Enter the ZIP password to continue.';
+messages.en.txt_new_type_header = 'New {type}';
+messages.en.txt_edit_type_header = 'Edit {type}';
+messages.en.txt_delete_folder = 'Delete Folder';
+messages.en.txt_delete_folder_message = 'Delete folder "{name}"? Items inside will move to No Folder.';
+messages.en.txt_delete_all_folders = 'Delete All Folders';
+messages.en.txt_delete_all_folders_message = 'Delete all folders? Items inside will move to No Folder.';
+messages.en.txt_folder_not_found = 'Folder not found';
+messages.en.txt_folder_deleted = 'Folder deleted';
+messages.en.txt_folders_deleted = 'Folders deleted';
+messages.en.txt_delete_folder_failed = 'Delete folder failed';
+messages.en.txt_delete_all_folders_failed = 'Delete all folders failed';
+messages.en.txt_other = 'Other';
+messages.en.txt_vault_key_unavailable = 'Vault key unavailable. Please unlock vault and try again.';
+messages.en.txt_vault_not_ready = 'Vault is not ready yet';
+messages.en.txt_unsupported_export_format = 'Unsupported export format';
+messages.en.txt_invalid_encrypted_export = 'Invalid encrypted export file.';
+messages.en.txt_export_belongs_to_another_account = 'This encrypted export belongs to another account.';
+messages.en.txt_invalid_argon2id_params = 'Invalid Argon2id parameters in export file.';
+messages.en.txt_unsupported_kdf_type = 'Unsupported kdfType: {type}';
+messages.en.txt_invalid_file_password = 'Invalid file password.';
+messages.en.txt_failed_to_map_attachments = 'Failed to map {count} attachment(s) to imported items.';
+
+zhCNOverrides.txt_import = '导入';
+zhCNOverrides.txt_export = '导出';
+zhCNOverrides.txt_format = '格式';
+zhCNOverrides.txt_source_file = '源文件';
+zhCNOverrides.txt_folder_handling = '文件夹处理';
+zhCNOverrides.txt_import_folder_mode_original = '保留导入文件中的原始路径';
+zhCNOverrides.txt_import_folder_mode_none = '不使用文件夹';
+zhCNOverrides.txt_import_folder_mode_target = '导入到指定文件夹';
+zhCNOverrides.txt_target_folder = '目标文件夹';
+zhCNOverrides.txt_select_folder_placeholder = '-- 选择文件夹 --';
+zhCNOverrides.txt_import_vault_data_hint = '将数据导入到当前账号。';
+zhCNOverrides.txt_export_vault_data_hint = '从当前账号导出数据。';
+zhCNOverrides.txt_encrypted_mode = '加密方式';
+zhCNOverrides.txt_account_verification = '账号验证';
+zhCNOverrides.txt_password_verification = '密码验证';
+zhCNOverrides.txt_file_password = '文件密码';
+zhCNOverrides.txt_zip_password_optional = 'ZIP 密码（可选）';
+zhCNOverrides.txt_zip_password = 'ZIP 密码';
+zhCNOverrides.txt_close = '关闭';
+zhCNOverrides.txt_total = '总计';
+zhCNOverrides.txt_import_success = '数据导入成功';
+zhCNOverrides.txt_import_success_number_of_items = '一共导入了 {count} 个项目。';
+zhCNOverrides.txt_import_attachment_summary = '附件已导入 {imported}/{total} 个。';
+zhCNOverrides.txt_import_failed_attachments_title = '以下 {count} 个附件未导入：';
+zhCNOverrides.txt_import_attachment_target_not_found = '没有找到对应的导入项目。';
+zhCNOverrides.txt_upload_attachment_failed = '附件上传失败。';
+zhCNOverrides.txt_import_file_password_required = '请输入文件密码。';
+zhCNOverrides.txt_import_invalid_zip_password = 'ZIP 密码错误。';
+zhCNOverrides.txt_export_completed = '导出完成';
+zhCNOverrides.txt_export_failed = '导出失败';
+zhCNOverrides.txt_import_invalid_password_protected_file = '密码保护导出文件格式无效。';
+zhCNOverrides.txt_import_decrypt_failed = '导入文件解密失败。';
+zhCNOverrides.txt_import_empty_zip_archive = 'ZIP 压缩包为空。';
+zhCNOverrides.txt_import_no_json_found_in_zip = 'ZIP 内未找到可导入的 JSON 数据。';
+zhCNOverrides.txt_import_data_json_not_found = 'ZIP 内未找到 data.json。';
+zhCNOverrides.txt_import_zip_password_required = '该 ZIP 需要密码。';
+zhCNOverrides.txt_import_invalid_json_file = 'JSON 文件无效';
+zhCNOverrides.txt_import_failed = '导入失败';
+zhCNOverrides.txt_import_encrypted_file_title = '导入加密文件';
+zhCNOverrides.txt_import_encrypted_file_message = '该 Bitwarden 导出文件已加密，请输入文件密码继续。';
+zhCNOverrides.txt_import_encrypted_zip_title = '导入加密 ZIP';
+zhCNOverrides.txt_import_encrypted_zip_message = '该 ZIP 压缩包已加密，请输入 ZIP 密码继续。';
+
+zhCNOverrides.txt_import_export_title = '导入导出';
+zhCNOverrides.txt_new_type_header = '新建{type}';
+zhCNOverrides.txt_edit_type_header = '编辑{type}';
+zhCNOverrides.txt_delete_folder = '删除文件夹';
+zhCNOverrides.txt_delete_folder_message = '删除文件夹「{name}」？其中的项目将移至无文件夹。';
+zhCNOverrides.txt_delete_all_folders = '删除全部文件夹';
+zhCNOverrides.txt_delete_all_folders_message = '确认删除全部文件夹吗？其中的项目将移至无文件夹。';
+zhCNOverrides.txt_folder_not_found = '文件夹不存在';
+zhCNOverrides.txt_folder_deleted = '文件夹已删除';
+zhCNOverrides.txt_folders_deleted = '文件夹已删除';
+zhCNOverrides.txt_delete_folder_failed = '删除文件夹失败';
+zhCNOverrides.txt_delete_all_folders_failed = '删除全部文件夹失败';
+zhCNOverrides.txt_other = '其他';
+zhCNOverrides.txt_vault_key_unavailable = '账户密钥不可用，请先解锁密码库后重试。';
+zhCNOverrides.txt_vault_not_ready = '密码库数据尚未就绪';
+zhCNOverrides.txt_unsupported_export_format = '不支持的导出格式';
+zhCNOverrides.txt_invalid_encrypted_export = '加密导出文件无效。';
+zhCNOverrides.txt_export_belongs_to_another_account = '此加密导出文件属于另一个账号。';
+zhCNOverrides.txt_invalid_argon2id_params = '导出文件中的 Argon2id 参数无效。';
+zhCNOverrides.txt_unsupported_kdf_type = '不支持的 KDF 类型：{type}';
+zhCNOverrides.txt_invalid_file_password = '文件密码错误。';
+zhCNOverrides.txt_failed_to_map_attachments = '无法将 {count} 个附件匹配到导入项目。';
 
 messages['zh-CN'] = { ...messages.en, ...zhCNOverrides };
 
@@ -773,3 +1008,4 @@ export function setLocale(next: Locale): void {
     // ignore storage errors
   }
 }
+

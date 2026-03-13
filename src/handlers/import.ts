@@ -1,13 +1,16 @@
 import { Env, Cipher, Folder, CipherType } from '../types';
+import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
-import { errorResponse } from '../utils/response';
+import { errorResponse, jsonResponse } from '../utils/response';
+import { readActingDeviceIdentifier } from '../utils/device';
 import { generateUUID } from '../utils/uuid';
 import { LIMITS } from '../config/limits';
-import { normalizeCipherLoginForCompatibility } from './ciphers';
+import { normalizeCipherLoginForStorage, normalizeCipherSshKeyForCompatibility } from './ciphers';
 
 // Bitwarden client import request format
 interface CiphersImportRequest {
   ciphers: Array<{
+    id?: string | null;
     type: number;
     name?: string | null;
     notes?: string | null;
@@ -90,6 +93,8 @@ async function runBatchInChunks(db: D1Database, statements: D1PreparedStatement[
 // POST /api/ciphers/import - Bitwarden client import endpoint
 export async function handleCiphersImport(request: Request, env: Env, userId: string): Promise<Response> {
   const storage = new StorageService(env.DB);
+  const url = new URL(request.url);
+  const returnCipherMap = url.searchParams.get('returnCipherMap') === '1';
 
   let importData: CiphersImportRequest;
   try {
@@ -151,9 +156,12 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
 
   // Create ciphers
   const cipherRows: Cipher[] = [];
+  const cipherMapRows: Array<{ index: number; sourceId: string | null; id: string }> = [];
   for (let i = 0; i < ciphers.length; i++) {
     const c = ciphers[i];
     const folderId = cipherFolderMap.get(i) || null;
+    const sourceIdRaw = String(c?.id ?? '').trim();
+    const sourceId = sourceIdRaw || null;
 
     const cipher: Cipher = {
       ...c,
@@ -220,15 +228,16 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
       })) || null,
       passwordHistory: c.passwordHistory ?? null,
       reprompt: c.reprompt ?? 0,
-      sshKey: (c as any).sshKey ?? null,
+      sshKey: normalizeCipherSshKeyForCompatibility((c as any).sshKey ?? null),
       key: (c as any).key ?? null,
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
     };
-    cipher.login = normalizeCipherLoginForCompatibility(cipher.login);
+    cipher.login = normalizeCipherLoginForStorage(cipher.login);
 
     cipherRows.push(cipher);
+    cipherMapRows.push({ index: i, sourceId, id: cipher.id });
   }
 
   if (cipherRows.length > 0) {
@@ -261,7 +270,15 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
   }
 
   // Update revision date
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+
+  if (returnCipherMap) {
+    return jsonResponse({
+      object: 'import-result',
+      cipherMap: cipherMapRows,
+    });
+  }
 
   return new Response(null, { status: 200 });
 }

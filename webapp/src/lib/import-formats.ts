@@ -5,6 +5,8 @@ type ImportSourceEntry = { id: string; label: string };
 export const IMPORT_SOURCES = [
   { id: 'bitwarden_json', label: 'Bitwarden (json)' },
   { id: 'bitwarden_csv', label: 'Bitwarden (csv)' },
+  { id: 'bitwarden_zip', label: 'Bitwarden (zip)' },
+  { id: 'nodewarden_json', label: 'NodeWarden (json)' },
   { id: 'onepassword_1pux', label: '1Password (1pux/json)' },
   { id: 'onepassword_1pif', label: '1Password (1pif)' },
   { id: 'onepassword_mac_csv', label: '1Password 6 and 7 Mac (csv)' },
@@ -53,8 +55,10 @@ export const IMPORT_SOURCES = [
 export type ImportSourceId = (typeof IMPORT_SOURCES)[number]['id'];
 
 export function getFileAcceptBySource(source: ImportSourceId): string {
+  if (source === 'bitwarden_zip') return '.zip,application/zip,application/x-zip-compressed';
   if (
     source === 'bitwarden_json' ||
+    source === 'nodewarden_json' ||
     source === 'onepassword_1pux' ||
     source === 'protonpass_json' ||
     source === 'avast_json' ||
@@ -90,6 +94,7 @@ export interface BitwardenFieldInput {
   linkedId?: number | null;
 }
 export interface BitwardenCipherInput {
+  id?: string | null;
   type?: number | null;
   name?: string | null;
   notes?: string | null;
@@ -2415,6 +2420,7 @@ export function normalizeBitwardenImport(raw: unknown): CiphersImportPayload {
   let hasAnyExplicitFolderLink = false;
   for (const item of itemsRaw) {
     ciphers.push({
+      id: item?.id ?? null,
       type: Number(item?.type || 1) || 1,
       name: item?.name ?? 'Untitled',
       notes: item?.notes ?? null,
@@ -2497,6 +2503,12 @@ export function normalizeBitwardenEncryptedAccountImport(raw: BitwardenJsonInput
 const IMPORT_SOURCE_PARSERS: Record<ImportSourceId, (textRaw: string) => CiphersImportPayload> = {
   bitwarden_json: () => {
     throw new Error('bitwarden_json is handled by dedicated JSON flow');
+  },
+  bitwarden_zip: () => {
+    throw new Error('bitwarden_zip is handled by dedicated zip flow');
+  },
+  nodewarden_json: () => {
+    throw new Error('nodewarden_json is handled by dedicated JSON flow');
   },
   bitwarden_csv: parseBitwardenCsv,
   onepassword_1pux: parseOnePassword1PuxJson,

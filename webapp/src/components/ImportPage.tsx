@@ -1,9 +1,17 @@
-import { useState } from 'preact/hooks';
+﻿import { useState } from 'preact/hooks';
 import { argon2idAsync } from '@noble/hashes/argon2.js';
 import { strFromU8, unzipSync } from 'fflate';
-import { FileUp } from 'lucide-preact';
+import { BlobReader, Uint8ArrayWriter, ZipReader, configure as configureZipJs } from '@zip.js/zip.js';
+import { Download, FileUp } from 'lucide-preact';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import type { CiphersImportPayload } from '@/lib/api';
+import {
+  type EncryptedJsonMode,
+  EXPORT_FORMATS,
+  type ExportDownloadPayload,
+  type ExportFormatId,
+  type ExportRequest,
+} from '@/lib/export-formats';
 import {
   getFileAcceptBySource,
   IMPORT_SOURCES,
@@ -17,18 +25,39 @@ import { base64ToBytes, decryptStr, hkdfExpand, pbkdf2 } from '@/lib/crypto';
 import { t } from '@/lib/i18n';
 import type { Folder } from '@/lib/types';
 
+configureZipJs({ useWebWorkers: false });
+
+export interface ImportAttachmentFile {
+  sourceCipherId: string | null;
+  sourceCipherIndex: number | null;
+  fileName: string;
+  bytes: Uint8Array;
+}
+
 interface ImportPageProps {
   onImport: (
     payload: CiphersImportPayload,
-    options: { folderMode: 'original' | 'none' | 'target'; targetFolderId: string | null }
-  ) => Promise<void>;
+    options: { folderMode: 'original' | 'none' | 'target'; targetFolderId: string | null },
+    attachments?: ImportAttachmentFile[]
+  ) => Promise<ImportResultSummary>;
   onImportEncryptedRaw: (
     payload: CiphersImportPayload,
-    options: { folderMode: 'original' | 'none' | 'target'; targetFolderId: string | null }
-  ) => Promise<void>;
+    options: { folderMode: 'original' | 'none' | 'target'; targetFolderId: string | null },
+    attachments?: ImportAttachmentFile[]
+  ) => Promise<ImportResultSummary>;
   accountKeys?: { encB64: string; macB64: string } | null;
   onNotify: (type: 'success' | 'error', text: string) => void;
   folders: Folder[];
+  onExport: (request: ExportRequest) => Promise<ExportDownloadPayload>;
+}
+
+export interface ImportResultSummary {
+  totalItems: number;
+  folderCount: number;
+  typeCounts: Array<{ label: string; count: number }>;
+  attachmentCount: number;
+  importedAttachmentCount: number;
+  failedAttachments: Array<{ fileName: string; reason: string }>;
 }
 
 interface BitwardenPasswordProtectedInput extends BitwardenJsonInput {
@@ -45,6 +74,8 @@ interface BitwardenPasswordProtectedInput extends BitwardenJsonInput {
 const COMMON_IMPORT_SOURCE_IDS: ImportSourceId[] = [
   'bitwarden_json',
   'bitwarden_csv',
+  'bitwarden_zip',
+  'nodewarden_json',
   'onepassword_1pux',
   'onepassword_1pif',
   'onepassword_mac_csv',
@@ -80,7 +111,7 @@ async function derivePasswordProtectedFileKey(
   const iterations = Number(parsed.kdfIterations || 0);
   const kdfType = Number(parsed.kdfType);
   if (!salt || !Number.isFinite(iterations) || iterations <= 0) {
-    throw new Error('Invalid password-protected export file.');
+    throw new Error(t('txt_import_invalid_password_protected_file'));
   }
 
   let keyMaterial: Uint8Array;
@@ -90,7 +121,7 @@ async function derivePasswordProtectedFileKey(
     const memoryMiB = Number(parsed.kdfMemory || 0);
     const parallelism = Number(parsed.kdfParallelism || 0);
     if (!Number.isFinite(memoryMiB) || memoryMiB <= 0 || !Number.isFinite(parallelism) || parallelism <= 0) {
-      throw new Error('Invalid Argon2id parameters in export file.');
+      throw new Error(t('txt_invalid_argon2id_params'));
     }
     const memoryKiB = Math.floor(memoryMiB * 1024);
     const maxmem = memoryKiB * 1024 + 1024 * 1024;
@@ -103,7 +134,7 @@ async function derivePasswordProtectedFileKey(
       asyncTick: 10,
     });
   } else {
-    throw new Error(`Unsupported kdfType: ${kdfType}`);
+    throw new Error(t('txt_unsupported_kdf_type', { type: String(kdfType) }));
   }
 
   const enc = await hkdfExpand(keyMaterial, 'enc', 32);
@@ -113,25 +144,25 @@ async function derivePasswordProtectedFileKey(
 
 async function decryptPasswordProtectedExport(parsed: BitwardenPasswordProtectedInput, password: string): Promise<unknown> {
   if (!parsed.encKeyValidation_DO_NOT_EDIT || !parsed.data) {
-    throw new Error('Invalid password-protected export file.');
+    throw new Error(t('txt_import_invalid_password_protected_file'));
   }
   const pass = String(password || '').trim();
   if (!pass) {
-    throw new Error('Please enter file password.');
+    throw new Error(t('txt_import_file_password_required'));
   }
 
   const key = await derivePasswordProtectedFileKey(parsed, pass);
   try {
     await decryptStr(parsed.encKeyValidation_DO_NOT_EDIT, key.enc, key.mac);
   } catch {
-    throw new Error('Invalid file password.');
+    throw new Error(t('txt_invalid_file_password'));
   }
 
   const plainJson = await decryptStr(parsed.data, key.enc, key.mac);
   try {
     return JSON.parse(plainJson);
   } catch {
-    throw new Error('Failed to decrypt import file.');
+    throw new Error(t('txt_import_decrypt_failed'));
   }
 }
 
@@ -142,7 +173,7 @@ function isZipPayload(bytes: Uint8Array): boolean {
 function readZipText(bytes: Uint8Array, source: ImportSourceId): string {
   const unzipped = unzipSync(bytes);
   const fileNames = Object.keys(unzipped);
-  if (!fileNames.length) throw new Error('Empty zip archive.');
+  if (!fileNames.length) throw new Error(t('txt_import_empty_zip_archive'));
 
   const preferred = source === 'onepassword_1pux' ? ['export.data', 'export.json'] : ['protonpass.json', 'export.json'];
   for (const p of preferred) {
@@ -152,7 +183,7 @@ function readZipText(bytes: Uint8Array, source: ImportSourceId): string {
 
   const firstJson = fileNames.find((n) => n.toLowerCase().endsWith('.json') || n.toLowerCase().endsWith('.data'));
   if (firstJson) return strFromU8(unzipped[firstJson]);
-  throw new Error('No importable JSON data found in zip archive.');
+  throw new Error(t('txt_import_no_json_found_in_zip'));
 }
 
 async function readImportText(file: File, source: ImportSourceId): Promise<string> {
@@ -164,45 +195,189 @@ async function readImportText(file: File, source: ImportSourceId): Promise<strin
   return new TextDecoder().decode(bytes);
 }
 
-export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys, onNotify, folders }: ImportPageProps) {
+interface PendingPasswordImportContext {
+  parsed: BitwardenPasswordProtectedInput;
+  source: 'bitwarden_json' | 'nodewarden_json' | 'bitwarden_zip';
+  attachments: ImportAttachmentFile[];
+}
+
+class ZipNeedsPasswordError extends Error {}
+class ZipInvalidPasswordError extends Error {}
+
+function looksLikeZipPasswordError(error: unknown): boolean {
+  const message = error instanceof Error ? String(error.message || '').toLowerCase() : '';
+  if (!message) return false;
+  return message.includes('password') || message.includes('encrypted');
+}
+
+async function readBitwardenZipPayload(
+  file: File,
+  passwordRaw: string
+): Promise<{ jsonText: string; attachments: ImportAttachmentFile[] }> {
+  const password = String(passwordRaw || '').trim();
+  const reader = new ZipReader(new BlobReader(file), { useWebWorkers: false });
+  try {
+    const entries = await reader.getEntries();
+    if (!entries.length) throw new Error(t('txt_import_empty_zip_archive'));
+
+    let jsonText = '';
+    const attachments: ImportAttachmentFile[] = [];
+    const options = password ? { password } : undefined;
+
+    for (const entry of entries) {
+      if (entry.directory) continue;
+      const name = String(entry.filename || '').trim().replace(/\\/g, '/');
+      if (!name) continue;
+
+      const bytes = await entry.getData(new Uint8ArrayWriter(), options);
+      const lower = name.toLowerCase();
+      if (lower === 'data.json') {
+        jsonText = new TextDecoder().decode(bytes);
+        continue;
+      }
+
+      const attachmentMatch = name.match(/^attachments\/([^/]+)\/(.+)$/i);
+      if (!attachmentMatch) continue;
+      const sourceCipherId = String(attachmentMatch[1] || '').trim() || null;
+      const fileName = String(attachmentMatch[2] || '').trim() || 'attachment.bin';
+      attachments.push({
+        sourceCipherId,
+        sourceCipherIndex: null,
+        fileName,
+        bytes,
+      });
+    }
+
+    if (!jsonText) throw new Error(t('txt_import_data_json_not_found'));
+    return { jsonText, attachments };
+  } catch (error) {
+    if (looksLikeZipPasswordError(error)) {
+      if (!password) throw new ZipNeedsPasswordError(t('txt_import_zip_password_required'));
+      throw new ZipInvalidPasswordError(t('txt_import_invalid_zip_password'));
+    }
+    if (!password && error instanceof Error && /invalid|corrupt|unsupported/.test(error.message.toLowerCase())) {
+      throw error;
+    }
+    throw error;
+  } finally {
+    await reader.close();
+  }
+}
+
+function parseNodeWardenAttachmentArray(raw: unknown): ImportAttachmentFile[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ImportAttachmentFile[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const row = entry as Record<string, unknown>;
+    const fileName = String(row.fileName || '').trim() || 'attachment.bin';
+    const base64 = String(row.data || '').trim();
+    if (!base64) continue;
+    try {
+      const bytes = base64ToBytes(base64);
+      const sourceCipherId = String(row.cipherId || '').trim() || null;
+      const indexRaw = Number(row.cipherIndex);
+      out.push({
+        sourceCipherId,
+        sourceCipherIndex: Number.isFinite(indexRaw) ? indexRaw : null,
+        fileName,
+        bytes,
+      });
+    } catch {
+      // skip malformed attachment row
+    }
+  }
+  return out;
+}
+
+export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys, onNotify, folders, onExport }: ImportPageProps) {
   const [source, setSource] = useState<ImportSourceId>('bitwarden_json');
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPasswordSubmitting, setIsPasswordSubmitting] = useState(false);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [importPassword, setImportPassword] = useState('');
-  const [pendingPasswordImport, setPendingPasswordImport] = useState<BitwardenPasswordProtectedInput | null>(null);
+  const [pendingPasswordImport, setPendingPasswordImport] = useState<PendingPasswordImportContext | null>(null);
+  const [zipPasswordDialogOpen, setZipPasswordDialogOpen] = useState(false);
+  const [zipImportPassword, setZipImportPassword] = useState('');
+  const [pendingZipFile, setPendingZipFile] = useState<File | null>(null);
+  const [isZipPasswordSubmitting, setIsZipPasswordSubmitting] = useState(false);
   const [folderMode, setFolderMode] = useState<'original' | 'none' | 'target'>('original');
   const [targetFolderId, setTargetFolderId] = useState('');
+  const [exportFormat, setExportFormat] = useState<ExportFormatId>('bitwarden_json');
+  const [encryptedJsonMode, setEncryptedJsonMode] = useState<EncryptedJsonMode>('account');
+  const [exportPassword, setExportPassword] = useState('');
+  const [zipPassword, setZipPassword] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportAuthDialogOpen, setExportAuthDialogOpen] = useState(false);
+  const [exportAuthPassword, setExportAuthPassword] = useState('');
+  const [importSummary, setImportSummary] = useState<ImportResultSummary | null>(null);
   const commonSourceSet = new Set<ImportSourceId>(COMMON_IMPORT_SOURCE_IDS);
   const commonSources = IMPORT_SOURCES.filter((item) => commonSourceSet.has(item.id as ImportSourceId));
   const otherSources = IMPORT_SOURCES.filter((item) => !commonSourceSet.has(item.id as ImportSourceId));
 
-  async function runBitwardenJsonImport(parsed: unknown): Promise<void> {
+  async function runBitwardenJsonImport(parsed: unknown, attachments: ImportAttachmentFile[] = []): Promise<ImportResultSummary> {
     if (isRecord(parsed) && parsed.encrypted === true) {
       const accountEncrypted = parsed as BitwardenJsonInput;
       if (!accountKeys?.encB64 || !accountKeys?.macB64) {
-        throw new Error('Vault key unavailable. Please unlock vault and try again.');
+        throw new Error(t('txt_vault_key_unavailable'));
       }
       const validation = String(accountEncrypted.encKeyValidation_DO_NOT_EDIT || '').trim();
-      if (!validation) throw new Error('Invalid encrypted export file.');
+      if (!validation) throw new Error(t('txt_invalid_encrypted_export'));
       const accountEncKey = base64ToBytes(accountKeys.encB64);
       const accountMacKey = base64ToBytes(accountKeys.macB64);
       try {
         await decryptStr(validation, accountEncKey, accountMacKey);
       } catch {
-        throw new Error('This encrypted export belongs to another account.');
+        throw new Error(t('txt_export_belongs_to_another_account'));
       }
-      await onImportEncryptedRaw(normalizeBitwardenEncryptedAccountImport(accountEncrypted), {
+      return onImportEncryptedRaw(
+        normalizeBitwardenEncryptedAccountImport(accountEncrypted),
+        {
+          folderMode,
+          targetFolderId: folderMode === 'target' ? targetFolderId || null : null,
+        },
+        attachments
+      );
+    }
+    return onImport(
+      normalizeBitwardenImport(parsed),
+      {
         folderMode,
         targetFolderId: folderMode === 'target' ? targetFolderId || null : null,
-      });
-      return;
+      },
+      attachments
+    );
+  }
+
+  async function extractNodeWardenAttachments(parsed: unknown): Promise<ImportAttachmentFile[]> {
+    if (!isRecord(parsed)) return [];
+    const direct = parseNodeWardenAttachmentArray(parsed.nodewardenAttachments);
+    if (direct.length) return direct;
+
+    const encryptedPayload = String(parsed.nodewardenAttachmentsEnc || '').trim();
+    if (!encryptedPayload) return [];
+    if (!accountKeys?.encB64 || !accountKeys?.macB64) {
+      throw new Error(t('txt_vault_key_unavailable'));
     }
-    await onImport(normalizeBitwardenImport(parsed), {
-      folderMode,
-      targetFolderId: folderMode === 'target' ? targetFolderId || null : null,
-    });
+    const accountEnc = base64ToBytes(accountKeys.encB64);
+    const accountMac = base64ToBytes(accountKeys.macB64);
+    const plain = await decryptStr(encryptedPayload, accountEnc, accountMac);
+    const unpacked = JSON.parse(plain) as Record<string, unknown>;
+    return parseNodeWardenAttachmentArray(unpacked.nodewardenAttachments);
+  }
+
+  async function runNodeWardenJsonImport(parsed: unknown, extraAttachments: ImportAttachmentFile[] = []): Promise<ImportResultSummary> {
+    const bundled = await extractNodeWardenAttachments(parsed);
+    return runBitwardenJsonImport(parsed, [...bundled, ...extraAttachments]);
+  }
+
+  async function processPasswordProtectedImport(ctx: PendingPasswordImportContext): Promise<ImportResultSummary> {
+    const parsed = await decryptPasswordProtectedExport(ctx.parsed, importPassword);
+    if (ctx.source === 'nodewarden_json') {
+      return runNodeWardenJsonImport(parsed, ctx.attachments);
+    }
+    return runBitwardenJsonImport(parsed, ctx.attachments);
   }
 
   async function handleSubmit() {
@@ -213,31 +388,77 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
 
     setIsSubmitting(true);
     try {
+      if (source === 'bitwarden_zip') {
+        try {
+          const bundle = await readBitwardenZipPayload(file, '');
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(bundle.jsonText);
+          } catch {
+            throw new Error(t('txt_import_invalid_json_file'));
+          }
+          if (isPasswordProtectedExport(parsed)) {
+            setPendingPasswordImport({
+              parsed,
+              source: 'bitwarden_zip',
+              attachments: bundle.attachments,
+            });
+            setImportPassword('');
+            setPasswordDialogOpen(true);
+            return;
+          }
+          const summary = await runBitwardenJsonImport(parsed, bundle.attachments);
+          setImportSummary(summary);
+          setFile(null);
+          return;
+        } catch (error) {
+          if (error instanceof ZipNeedsPasswordError) {
+            setPendingZipFile(file);
+            setZipImportPassword('');
+            setZipPasswordDialogOpen(true);
+            return;
+          }
+          throw error;
+        }
+      }
+
       const text = await readImportText(file, source);
-      if (source === 'bitwarden_json') {
+      if (source === 'bitwarden_json' || source === 'nodewarden_json') {
         let parsed: unknown;
         try {
           parsed = JSON.parse(text);
         } catch {
-          throw new Error('Invalid JSON file');
+          throw new Error(t('txt_import_invalid_json_file'));
         }
         if (isPasswordProtectedExport(parsed)) {
-          setPendingPasswordImport(parsed);
+          setPendingPasswordImport({
+            parsed,
+            source,
+            attachments: [],
+          });
           setImportPassword('');
           setPasswordDialogOpen(true);
           return;
         }
-        await runBitwardenJsonImport(parsed);
+        const summary =
+          source === 'nodewarden_json'
+            ? await runNodeWardenJsonImport(parsed)
+            : await runBitwardenJsonImport(parsed);
+        setImportSummary(summary);
       } else {
-        await onImport(parseImportPayloadBySource(source, text), {
-          folderMode,
-          targetFolderId: folderMode === 'target' ? targetFolderId || null : null,
-        });
+        const summary = await onImport(
+          parseImportPayloadBySource(source, text),
+          {
+            folderMode,
+            targetFolderId: folderMode === 'target' ? targetFolderId || null : null,
+          },
+          []
+        );
+        setImportSummary(summary);
       }
       setFile(null);
-      onNotify('success', 'Import completed');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Import failed';
+      const message = error instanceof Error ? error.message : t('txt_import_failed');
       onNotify('error', message);
     } finally {
       setIsSubmitting(false);
@@ -248,31 +469,129 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
     if (!pendingPasswordImport) return;
     setIsPasswordSubmitting(true);
     try {
-      const parsed = await decryptPasswordProtectedExport(pendingPasswordImport, importPassword);
-      await runBitwardenJsonImport(parsed);
+      const summary = await processPasswordProtectedImport(pendingPasswordImport);
+      setImportSummary(summary);
       setFile(null);
       setImportPassword('');
       setPendingPasswordImport(null);
       setPasswordDialogOpen(false);
-      onNotify('success', 'Import completed');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Import failed';
+      const message = error instanceof Error ? error.message : t('txt_import_failed');
       onNotify('error', message);
     } finally {
       setIsPasswordSubmitting(false);
     }
   }
 
+  async function handleZipPasswordImportConfirm() {
+    if (!pendingZipFile) return;
+    setIsZipPasswordSubmitting(true);
+    try {
+      const bundle = await readBitwardenZipPayload(pendingZipFile, zipImportPassword);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(bundle.jsonText);
+      } catch {
+        throw new Error(t('txt_import_invalid_json_file'));
+      }
+      if (isPasswordProtectedExport(parsed)) {
+        setPendingPasswordImport({
+          parsed,
+          source: 'bitwarden_zip',
+          attachments: bundle.attachments,
+        });
+        setImportPassword('');
+        setPasswordDialogOpen(true);
+      } else {
+        const summary = await runBitwardenJsonImport(parsed, bundle.attachments);
+        setImportSummary(summary);
+        setFile(null);
+      }
+      setZipPasswordDialogOpen(false);
+      setPendingZipFile(null);
+      setZipImportPassword('');
+    } catch (error) {
+      if (error instanceof ZipInvalidPasswordError) {
+        onNotify('error', t('txt_import_invalid_zip_password'));
+        return;
+      }
+      const message = error instanceof Error ? error.message : t('txt_import_failed');
+      onNotify('error', message);
+    } finally {
+      setIsZipPasswordSubmitting(false);
+    }
+  }
+
+  const exportNeedsMode =
+    exportFormat === 'bitwarden_encrypted_json' ||
+    exportFormat === 'bitwarden_encrypted_json_zip' ||
+    exportFormat === 'nodewarden_encrypted_json';
+  const exportNeedsFilePassword = exportNeedsMode && encryptedJsonMode === 'password';
+  const exportIsZip = exportFormat === 'bitwarden_json_zip' || exportFormat === 'bitwarden_encrypted_json_zip';
+
+  async function runExportWithMasterPassword(masterPassword: string) {
+    const filePassword = exportPassword.trim();
+    const zipPass = zipPassword.trim();
+    if (exportNeedsFilePassword && !filePassword) {
+      onNotify('error', t('txt_import_file_password_required'));
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const payload = await onExport({
+        format: exportFormat,
+        encryptedJsonMode: exportNeedsMode ? encryptedJsonMode : undefined,
+        filePassword,
+        zipPassword: exportIsZip ? zipPass : '',
+        masterPassword,
+      });
+      const blobBytes = Uint8Array.from(payload.bytes);
+      const blob = new Blob([blobBytes], { type: payload.mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = payload.fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      onNotify('success', t('txt_export_completed'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('txt_export_failed');
+      onNotify('error', message);
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  async function handleExportConfirmPassword() {
+    const masterPassword = String(exportAuthPassword || '').trim();
+    if (!masterPassword) {
+      onNotify('error', t('txt_master_password_is_required'));
+      return;
+    }
+    await runExportWithMasterPassword(masterPassword);
+    if (!isExporting) {
+      setExportAuthPassword('');
+      setExportAuthDialogOpen(false);
+    }
+  }
+
+  function handleExport() {
+    setExportAuthPassword('');
+    setExportAuthDialogOpen(true);
+  }
+
   return (
-    <div className="stack">
-      <section className="card">
-        <h3>Import</h3>
-        <p className="muted" style={{ textAlign: 'left', marginBottom: 12 }}>
-          Import vault data into your current account.
-        </p>
+    <div className="import-export-page">
+      <div className="import-export-panels">
+      <section className="card import-export-panel">
+        <h3>{t('txt_import')}</h3>
+        <p className="backup-inline-note">{t('txt_import_vault_data_hint')}</p>
         <div className="field-grid">
           <label className="field field-span-2">
-            <span>Format</span>
+            <span>{t('txt_format')}</span>
             <select className="input" value={source} onChange={(e) => setSource((e.currentTarget as HTMLSelectElement).value as ImportSourceId)}>
               {commonSources.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -293,7 +612,7 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
           </label>
 
           <label className="field field-span-2">
-            <span>Source file</span>
+            <span>{t('txt_source_file')}</span>
             <input
               className="input"
               type="file"
@@ -306,23 +625,23 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
           </label>
 
           <label className="field field-span-2">
-            <span>Folder handling</span>
+            <span>{t('txt_folder_handling')}</span>
             <select
               className="input"
               value={folderMode}
               onChange={(e) => setFolderMode((e.currentTarget as HTMLSelectElement).value as 'original' | 'none' | 'target')}
             >
-              <option value="original">Original path from import file</option>
-              <option value="none">No folder</option>
-              <option value="target">One selected folder</option>
+              <option value="original">{t('txt_import_folder_mode_original')}</option>
+              <option value="none">{t('txt_import_folder_mode_none')}</option>
+              <option value="target">{t('txt_import_folder_mode_target')}</option>
             </select>
           </label>
 
           {folderMode === 'target' && (
             <label className="field field-span-2">
-              <span>Target folder</span>
+              <span>{t('txt_target_folder')}</span>
               <select className="input" value={targetFolderId} onChange={(e) => setTargetFolderId((e.currentTarget as HTMLSelectElement).value)}>
-                <option value="">-- Select folder --</option>
+                <option value="">{t('txt_select_folder_placeholder')}</option>
                 {folders
                   .slice()
                   .sort((a, b) => String(a.decName || a.name || '').localeCompare(String(b.decName || b.name || '')))
@@ -343,16 +662,111 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
             disabled={isSubmitting || (folderMode === 'target' && !targetFolderId)}
             onClick={() => void handleSubmit()}
           >
-            <FileUp size={15} /> {isSubmitting ? t('txt_loading') : 'Import'}
+            <FileUp size={15} /> {isSubmitting ? t('txt_loading') : t('txt_import')}
           </button>
         </div>
       </section>
 
+      <section className="card import-export-panel">
+        <h3>{t('txt_export')}</h3>
+        <p className="backup-inline-note">{t('txt_export_vault_data_hint')}</p>
+        <div className="field-grid">
+          <label className="field field-span-2">
+            <span>{t('txt_format')}</span>
+            <select
+              className="input"
+              value={exportFormat}
+              onChange={(e) => {
+                const next = (e.currentTarget as HTMLSelectElement).value as ExportFormatId;
+                setExportFormat(next);
+              }}
+            >
+              {EXPORT_FORMATS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {exportNeedsMode && (
+            <label className="field field-span-2">
+              <span>{t('txt_encrypted_mode')}</span>
+              <select
+                className="input"
+                value={encryptedJsonMode}
+                onChange={(e) => setEncryptedJsonMode((e.currentTarget as HTMLSelectElement).value as EncryptedJsonMode)}
+              >
+                <option value="account">{t('txt_account_verification')}</option>
+                <option value="password">{t('txt_password_verification')}</option>
+              </select>
+            </label>
+          )}
+
+          {exportNeedsFilePassword && (
+            <label className="field field-span-2">
+              <span>{t('txt_file_password')}</span>
+              <input
+                className="input"
+                type="password"
+                value={exportPassword}
+                onInput={(e) => setExportPassword((e.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+          )}
+
+          {exportIsZip && (
+            <label className="field field-span-2">
+              <span>{t('txt_zip_password_optional')}</span>
+              <input
+                className="input"
+                type="password"
+                value={zipPassword}
+                onInput={(e) => setZipPassword((e.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+          )}
+        </div>
+
+        <div className="actions">
+          <button type="button" className="btn btn-primary" disabled={isExporting} onClick={() => void handleExport()}>
+            <Download size={15} className="btn-icon" />
+            {isExporting ? t('txt_loading') : t('txt_export')}
+          </button>
+        </div>
+      </section>
+      </div>
+
+      <ConfirmDialog
+        open={exportAuthDialogOpen}
+        title={t('txt_export')}
+        message={t('txt_enter_master_password_to_view_this_item')}
+        confirmText={isExporting ? t('txt_loading') : t('txt_verify')}
+        cancelText={t('txt_cancel')}
+        showIcon={false}
+        onConfirm={() => void handleExportConfirmPassword()}
+        onCancel={() => {
+          if (isExporting) return;
+          setExportAuthDialogOpen(false);
+          setExportAuthPassword('');
+        }}
+      >
+        <label className="field">
+          <span>{t('txt_master_password')}</span>
+          <input
+            className="input"
+            type="password"
+            value={exportAuthPassword}
+            onInput={(e) => setExportAuthPassword((e.currentTarget as HTMLInputElement).value)}
+          />
+        </label>
+      </ConfirmDialog>
+
       <ConfirmDialog
         open={passwordDialogOpen}
-        title="Import encrypted file"
-        message="This Bitwarden export is password-protected. Enter the export file password to continue."
-        confirmText={isPasswordSubmitting ? t('txt_loading') : 'Import'}
+        title={t('txt_import_encrypted_file_title')}
+        message={t('txt_import_encrypted_file_message')}
+        confirmText={isPasswordSubmitting ? t('txt_loading') : t('txt_import')}
         cancelText={t('txt_cancel')}
         showIcon={false}
         onConfirm={() => void handlePasswordImportConfirm()}
@@ -364,7 +778,7 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
         }}
       >
         <label className="field">
-          <span>File password</span>
+          <span>{t('txt_file_password')}</span>
           <input
             className="input"
             type="password"
@@ -373,6 +787,97 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
           />
         </label>
       </ConfirmDialog>
+
+      <ConfirmDialog
+        open={zipPasswordDialogOpen}
+        title={t('txt_import_encrypted_zip_title')}
+        message={t('txt_import_encrypted_zip_message')}
+        confirmText={isZipPasswordSubmitting ? t('txt_loading') : t('txt_import')}
+        cancelText={t('txt_cancel')}
+        showIcon={false}
+        onConfirm={() => void handleZipPasswordImportConfirm()}
+        onCancel={() => {
+          if (isZipPasswordSubmitting) return;
+          setZipPasswordDialogOpen(false);
+          setZipImportPassword('');
+          setPendingZipFile(null);
+        }}
+      >
+        <label className="field">
+          <span>{t('txt_zip_password')}</span>
+          <input
+            className="input"
+            type="password"
+            value={zipImportPassword}
+            onInput={(e) => setZipImportPassword((e.currentTarget as HTMLInputElement).value)}
+          />
+        </label>
+      </ConfirmDialog>
+
+      {importSummary && (
+        <div className="dialog-mask">
+          <section className="dialog-card import-summary-dialog">
+            <button
+              type="button"
+              className="import-summary-close"
+              onClick={() => setImportSummary(null)}
+              aria-label={t('txt_close')}
+            >
+              X
+            </button>
+            <h3 className="dialog-title">{t('txt_import_success')}</h3>
+            <div className="dialog-message">{t('txt_import_success_number_of_items', { count: importSummary.totalItems })}</div>
+            {importSummary.attachmentCount > 0 && (
+              <div className="dialog-message">
+                {t('txt_import_attachment_summary', {
+                  imported: String(importSummary.importedAttachmentCount),
+                  total: String(importSummary.attachmentCount),
+                })}
+              </div>
+            )}
+            {importSummary.failedAttachments.length > 0 && (
+              <div className="import-summary-failed-list">
+                <div className="import-summary-failed-title">
+                  {t('txt_import_failed_attachments_title', { count: String(importSummary.failedAttachments.length) })}
+                </div>
+                <ul>
+                  {importSummary.failedAttachments.map((row, index) => (
+                    <li key={`${row.fileName}-${index}`}>
+                      <strong>{row.fileName}</strong>
+                      {`: ${row.reason}`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="import-summary-table-wrap">
+              <table className="import-summary-table">
+                <thead>
+                  <tr>
+                    <th>{t('txt_type')}</th>
+                    <th>{t('txt_total')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importSummary.typeCounts.map((row) => (
+                    <tr key={row.label}>
+                      <td>{row.label}</td>
+                      <td>{row.count}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td>{t('txt_folder')}</td>
+                    <td>{importSummary.folderCount}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <button type="button" className="btn btn-primary dialog-btn" onClick={() => setImportSummary(null)}>
+              {t('txt_confirm')}
+            </button>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

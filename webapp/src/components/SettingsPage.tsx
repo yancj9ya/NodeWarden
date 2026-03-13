@@ -16,9 +16,16 @@ interface SettingsPageProps {
 
 function randomBase32Secret(length: number): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  const random = crypto.getRandomValues(new Uint8Array(length));
   let out = '';
-  for (const x of random) out += alphabet[x % alphabet.length];
+  const maxUnbiasedByte = Math.floor(256 / alphabet.length) * alphabet.length;
+  while (out.length < length) {
+    const random = crypto.getRandomValues(new Uint8Array(length));
+    for (const x of random) {
+      if (x >= maxUnbiasedByte) continue;
+      out += alphabet[x % alphabet.length];
+      if (out.length >= length) break;
+    }
+  }
   return out;
 }
 
@@ -182,6 +189,7 @@ export default function SettingsPage(props: SettingsPageProps) {
                   props.onNotify?.('success', t('txt_recovery_code_copied'));
                 }}
               >
+                <Clipboard size={14} className="btn-icon" />
                 {t('txt_copy_code')}
               </button>
             </div>

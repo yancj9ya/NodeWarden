@@ -1,4 +1,4 @@
-import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, SendAuthType, TrustedDeviceTokenSummary } from '../types';
+import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, SendAuthType, TrustedDeviceTokenSummary, RefreshTokenRecord } from '../types';
 import { LIMITS } from '../config/limits';
 
 const TWO_FACTOR_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -52,9 +52,11 @@ const SCHEMA_STATEMENTS: readonly string[] = [
   'ALTER TABLE sends ADD COLUMN emails TEXT',
 
   'CREATE TABLE IF NOT EXISTS refresh_tokens (' +
-  'token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, ' +
+  'token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, device_identifier TEXT, device_session_stamp TEXT, ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
   'CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)',
+  'ALTER TABLE refresh_tokens ADD COLUMN device_identifier TEXT',
+  'ALTER TABLE refresh_tokens ADD COLUMN device_session_stamp TEXT',
 
   'CREATE TABLE IF NOT EXISTS invites (' +
   'code TEXT PRIMARY KEY, created_by TEXT NOT NULL, used_by TEXT, expires_at TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
@@ -70,11 +72,14 @@ const SCHEMA_STATEMENTS: readonly string[] = [
   'CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created ON audit_logs(actor_user_id, created_at)',
 
   'CREATE TABLE IF NOT EXISTS devices (' +
-  'user_id TEXT NOT NULL, device_identifier TEXT NOT NULL, name TEXT NOT NULL, type INTEGER NOT NULL, ' +
+  'user_id TEXT NOT NULL, device_identifier TEXT NOT NULL, name TEXT NOT NULL, type INTEGER NOT NULL, session_stamp TEXT, banned INTEGER NOT NULL DEFAULT 0, banned_at TEXT, ' +
   'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
   'PRIMARY KEY (user_id, device_identifier), ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
   'CREATE INDEX IF NOT EXISTS idx_devices_user_updated ON devices(user_id, updated_at)',
+  'ALTER TABLE devices ADD COLUMN session_stamp TEXT',
+  'ALTER TABLE devices ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE devices ADD COLUMN banned_at TEXT',
 
   'CREATE TABLE IF NOT EXISTS trusted_two_factor_device_tokens (' +
   'token TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_identifier TEXT NOT NULL, expires_at INTEGER NOT NULL, ' +
@@ -104,6 +109,7 @@ export class StorageService {
   private static schemaVerified = false;
   private static lastRefreshTokenCleanupAt = 0;
   private static lastAttachmentTokenCleanupAt = 0;
+  private static readonly MAX_D1_SQL_VARIABLES = 100;
 
   private static readonly REFRESH_TOKEN_CLEANUP_INTERVAL_MS = LIMITS.cleanup.refreshTokenCleanupIntervalMs;
   private static readonly ATTACHMENT_TOKEN_CLEANUP_INTERVAL_MS = LIMITS.cleanup.attachmentTokenCleanupIntervalMs;
@@ -119,6 +125,13 @@ export class StorageService {
    */
   private safeBind(stmt: D1PreparedStatement, ...values: any[]): D1PreparedStatement {
     return stmt.bind(...values.map(v => v === undefined ? null : v));
+  }
+
+  private sqlChunkSize(fixedBindCount: number): number {
+    return Math.max(
+      1,
+      Math.min(LIMITS.performance.bulkMoveChunkSize, StorageService.MAX_D1_SQL_VARIABLES - fixedBindCount)
+    );
   }
 
   private async sha256Hex(input: string): Promise<string> {
@@ -464,6 +477,81 @@ export class StorageService {
     await this.db.prepare('DELETE FROM ciphers WHERE id = ? AND user_id = ?').bind(id, userId).run();
   }
 
+  async bulkSoftDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const now = new Date().toISOString();
+    const patch = JSON.stringify({
+      deletedAt: now,
+      updatedAt: now,
+    });
+    const chunkSize = this.sqlChunkSize(4);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(
+          `UPDATE ciphers
+           SET deleted_at = ?, updated_at = ?, data = json_patch(data, ?)
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .bind(now, now, patch, userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
+  async bulkRestoreCiphers(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const now = new Date().toISOString();
+    const patch = JSON.stringify({
+      deletedAt: null,
+      updatedAt: now,
+    });
+    const chunkSize = this.sqlChunkSize(3);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(
+          `UPDATE ciphers
+           SET deleted_at = NULL, updated_at = ?, data = json_patch(data, ?)
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .bind(now, patch, userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
+  async bulkDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const chunkSize = this.sqlChunkSize(1);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(`DELETE FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
   async getAllCiphers(userId: string): Promise<Cipher[]> {
     const res = await this.db.prepare('SELECT data FROM ciphers WHERE user_id = ? ORDER BY updated_at DESC').bind(userId).all<{ data: string }>();
     return (res.results || []).flatMap(r => {
@@ -490,24 +578,33 @@ export class StorageService {
 
   async getCiphersByIds(ids: string[], userId: string): Promise<Cipher[]> {
     if (ids.length === 0) return [];
-    // D1 doesn't support binding arrays directly; build placeholders.
-    const placeholders = ids.map(() => '?').join(',');
-    const stmt = this.db.prepare(`SELECT data FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
-    const res = await stmt.bind(userId, ...ids).all<{ data: string }>();
-    return (res.results || []).flatMap(r => {
-      try { return [JSON.parse(r.data) as Cipher]; } catch { return []; }
-    });
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return [];
+    const chunkSize = this.sqlChunkSize(1);
+    const out: Cipher[] = [];
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const stmt = this.db.prepare(`SELECT data FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
+      const res = await stmt.bind(userId, ...chunk).all<{ data: string }>();
+      out.push(
+        ...(res.results || []).flatMap(r => {
+          try { return [JSON.parse(r.data) as Cipher]; } catch { return []; }
+        })
+      );
+    }
+    return out;
   }
 
-  async bulkMoveCiphers(ids: string[], folderId: string | null, userId: string): Promise<void> {
-    if (ids.length === 0) return;
+  async bulkMoveCiphers(ids: string[], folderId: string | null, userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
     const now = new Date().toISOString();
     const uniqueIds = Array.from(new Set(ids));
     const patch = JSON.stringify({
       folderId,
       updatedAt: now,
     });
-    const chunkSize = LIMITS.performance.bulkMoveChunkSize;
+    const chunkSize = this.sqlChunkSize(4);
 
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
       const chunk = uniqueIds.slice(i, i + chunkSize);
@@ -523,7 +620,7 @@ export class StorageService {
         .run();
     }
 
-    await this.updateRevisionDate(userId);
+    return this.updateRevisionDate(userId);
   }
 
   // --- Folders ---
@@ -555,6 +652,42 @@ export class StorageService {
 
   async deleteFolder(id: string, userId: string): Promise<void> {
     await this.db.prepare('DELETE FROM folders WHERE id = ? AND user_id = ?').bind(id, userId).run();
+  }
+
+  async bulkDeleteFolders(ids: string[], userId: string): Promise<string | null> {
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const chunkSize = this.sqlChunkSize(1);
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const res = await this.db
+        .prepare(`SELECT data FROM ciphers WHERE user_id = ? AND folder_id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .all<{ data: string }>();
+
+      for (const row of res.results || []) {
+        let cipher: Cipher;
+        try {
+          cipher = JSON.parse(row.data) as Cipher;
+        } catch {
+          continue;
+        }
+        cipher.folderId = null;
+        cipher.updatedAt = now;
+        await this.saveCipher(cipher);
+      }
+
+      await this.db
+        .prepare(`DELETE FROM folders WHERE user_id = ? AND id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
   }
 
   // Clear folder references from all ciphers owned by the user.
@@ -659,7 +792,7 @@ export class StorageService {
     if (cipherIds.length === 0) return grouped;
 
     const uniqueCipherIds = [...new Set(cipherIds)];
-    const chunkSize = LIMITS.performance.bulkMoveChunkSize;
+    const chunkSize = this.sqlChunkSize(0);
 
     for (let i = 0; i < uniqueCipherIds.length; i += chunkSize) {
       const chunk = uniqueCipherIds.slice(i, i + chunkSize);
@@ -739,50 +872,68 @@ export class StorageService {
     await this.db.prepare('DELETE FROM attachments WHERE cipher_id = ?').bind(cipherId).run();
   }
 
-  async updateCipherRevisionDate(cipherId: string): Promise<void> {
+  async updateCipherRevisionDate(cipherId: string): Promise<{ userId: string; revisionDate: string } | null> {
     const cipher = await this.getCipher(cipherId);
-    if (!cipher) return;
+    if (!cipher) return null;
     cipher.updatedAt = new Date().toISOString();
     await this.saveCipher(cipher);
-    await this.updateRevisionDate(cipher.userId);
+    const revisionDate = await this.updateRevisionDate(cipher.userId);
+    return { userId: cipher.userId, revisionDate };
   }
 
   // --- Refresh tokens ---
 
-  async saveRefreshToken(token: string, userId: string, expiresAtMs?: number): Promise<void> {
+  async saveRefreshToken(
+    token: string,
+    userId: string,
+    expiresAtMs?: number,
+    deviceIdentifier?: string | null,
+    deviceSessionStamp?: string | null
+  ): Promise<void> {
     const expiresAt = expiresAtMs ?? (Date.now() + LIMITS.auth.refreshTokenTtlMs);
     await this.maybeCleanupExpiredRefreshTokens(Date.now());
     const tokenKey = await this.refreshTokenKey(token);
     await this.db.prepare(
-      'INSERT INTO refresh_tokens(token, user_id, expires_at) VALUES(?, ?, ?) ' +
-      'ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at'
+      'INSERT INTO refresh_tokens(token, user_id, expires_at, device_identifier, device_session_stamp) VALUES(?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at, device_identifier=excluded.device_identifier, device_session_stamp=excluded.device_session_stamp'
     )
-      .bind(tokenKey, userId, expiresAt)
+      .bind(tokenKey, userId, expiresAt, deviceIdentifier ?? null, deviceSessionStamp ?? null)
       .run();
   }
 
-  async getRefreshTokenUserId(token: string): Promise<string | null> {
+  async getRefreshTokenRecord(token: string): Promise<RefreshTokenRecord | null> {
     const now = Date.now();
     await this.maybeCleanupExpiredRefreshTokens(now);
     const tokenKey = await this.refreshTokenKey(token);
 
-    let row = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
+    let row = await this.db.prepare('SELECT user_id, expires_at, device_identifier, device_session_stamp FROM refresh_tokens WHERE token = ?')
       .bind(tokenKey)
-      .first<{ user_id: string; expires_at: number }>();
+      .first<{ user_id: string; expires_at: number; device_identifier: string | null; device_session_stamp: string | null }>();
 
     if (!row) {
-      const legacyRow = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
+      const legacyRow = await this.db.prepare('SELECT user_id, expires_at, device_identifier, device_session_stamp FROM refresh_tokens WHERE token = ?')
         .bind(token)
-        .first<{ user_id: string; expires_at: number }>();
+        .first<{ user_id: string; expires_at: number; device_identifier: string | null; device_session_stamp: string | null }>();
 
       if (legacyRow) {
         if (legacyRow.expires_at && legacyRow.expires_at < now) {
           await this.deleteRefreshToken(token);
           return null;
         }
-        await this.saveRefreshToken(token, legacyRow.user_id, legacyRow.expires_at);
+        await this.saveRefreshToken(
+          token,
+          legacyRow.user_id,
+          legacyRow.expires_at,
+          legacyRow.device_identifier ?? null,
+          legacyRow.device_session_stamp ?? null
+        );
         await this.db.prepare('DELETE FROM refresh_tokens WHERE token = ?').bind(token).run();
-        return legacyRow.user_id;
+        return {
+          userId: legacyRow.user_id,
+          expiresAt: legacyRow.expires_at,
+          deviceIdentifier: legacyRow.device_identifier ?? null,
+          deviceSessionStamp: legacyRow.device_session_stamp ?? null,
+        };
       }
     }
 
@@ -791,7 +942,17 @@ export class StorageService {
       await this.deleteRefreshToken(token);
       return null;
     }
-    return row.user_id;
+    return {
+      userId: row.user_id,
+      expiresAt: row.expires_at,
+      deviceIdentifier: row.device_identifier ?? null,
+      deviceSessionStamp: row.device_session_stamp ?? null,
+    };
+  }
+
+  async getRefreshTokenUserId(token: string): Promise<string | null> {
+    const record = await this.getRefreshTokenRecord(token);
+    return record?.userId ?? null;
   }
 
   async deleteRefreshToken(token: string): Promise<void> {
@@ -895,6 +1056,46 @@ export class StorageService {
     await this.db.prepare('DELETE FROM sends WHERE id = ? AND user_id = ?').bind(id, userId).run();
   }
 
+  async getSendsByIds(ids: string[], userId: string): Promise<Send[]> {
+    if (ids.length === 0) return [];
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return [];
+    const chunkSize = this.sqlChunkSize(1);
+    const out: Send[] = [];
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const res = await this.db
+        .prepare(
+          `SELECT id, user_id, type, name, notes, data, key, password_hash, password_salt, password_iterations, auth_type, emails, max_access_count, access_count, disabled, hide_email, created_at, updated_at, expiration_date, deletion_date
+           FROM sends
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .bind(userId, ...chunk)
+        .all<any>();
+      out.push(...(res.results || []).map((row) => this.mapSendRow(row)));
+    }
+    return out;
+  }
+
+  async bulkDeleteSends(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+    const chunkSize = this.sqlChunkSize(1);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(`DELETE FROM sends WHERE user_id = ? AND id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
   async getAllSends(userId: string): Promise<Send[]> {
     const res = await this.db
       .prepare(
@@ -915,8 +1116,17 @@ export class StorageService {
     return (res.results || []).map(row => this.mapSendRow(row));
   }
 
-  async deleteRefreshTokensByUserId(userId: string): Promise<void> {
-    await this.db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').bind(userId).run();
+  async deleteRefreshTokensByUserId(userId: string): Promise<number> {
+    const result = await this.db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').bind(userId).run();
+    return Number(result.meta.changes ?? 0);
+  }
+
+  async deleteRefreshTokensByDevice(userId: string, deviceIdentifier: string): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM refresh_tokens WHERE user_id = ? AND device_identifier = ?')
+      .bind(userId, deviceIdentifier)
+      .run();
+    return Number(result.meta.changes ?? 0);
   }
 
   // Keep a short overlap window for rotated refresh token to reduce
@@ -946,13 +1156,14 @@ export class StorageService {
 
   // --- Devices ---
 
-  async upsertDevice(userId: string, deviceIdentifier: string, name: string, type: number): Promise<void> {
+  async upsertDevice(userId: string, deviceIdentifier: string, name: string, type: number, sessionStamp?: string): Promise<void> {
     const now = new Date().toISOString();
+    const effectiveSessionStamp = String(sessionStamp || '').trim() || (await this.getDevice(userId, deviceIdentifier))?.sessionStamp || '';
     await this.db.prepare(
-      'INSERT INTO devices(user_id, device_identifier, name, type, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(user_id, device_identifier) DO UPDATE SET name=excluded.name, type=excluded.type, updated_at=excluded.updated_at'
+      'INSERT INTO devices(user_id, device_identifier, name, type, session_stamp, banned, banned_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 0, NULL, ?, ?) ' +
+      'ON CONFLICT(user_id, device_identifier) DO UPDATE SET name=excluded.name, type=excluded.type, session_stamp=excluded.session_stamp, updated_at=excluded.updated_at'
     )
-      .bind(userId, deviceIdentifier, name, type, now, now)
+      .bind(userId, deviceIdentifier, name, type, effectiveSessionStamp, now, now)
       .run();
   }
 
@@ -973,7 +1184,7 @@ export class StorageService {
   async getDevicesByUserId(userId: string): Promise<Device[]> {
     const res = await this.db
       .prepare(
-        'SELECT user_id, device_identifier, name, type, created_at, updated_at ' +
+        'SELECT user_id, device_identifier, name, type, session_stamp, banned, banned_at, created_at, updated_at ' +
         'FROM devices WHERE user_id = ? ORDER BY updated_at DESC'
       )
       .bind(userId)
@@ -983,9 +1194,30 @@ export class StorageService {
       deviceIdentifier: row.device_identifier,
       name: row.name,
       type: row.type,
+      sessionStamp: row.session_stamp || '',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  async getDevice(userId: string, deviceIdentifier: string): Promise<Device | null> {
+    const row = await this.db
+      .prepare(
+        'SELECT user_id, device_identifier, name, type, session_stamp, banned, banned_at, created_at, updated_at ' +
+        'FROM devices WHERE user_id = ? AND device_identifier = ? LIMIT 1'
+      )
+      .bind(userId, deviceIdentifier)
+      .first<any>();
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      deviceIdentifier: row.device_identifier,
+      name: row.name,
+      type: row.type,
+      sessionStamp: row.session_stamp || '',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   async deleteDevice(userId: string, deviceIdentifier: string): Promise<boolean> {
@@ -994,6 +1226,14 @@ export class StorageService {
       .bind(userId, deviceIdentifier)
       .run();
     return Number(result.meta.changes ?? 0) > 0;
+  }
+
+  async deleteDevicesByUserId(userId: string): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM devices WHERE user_id = ?')
+      .bind(userId)
+      .run();
+    return Number(result.meta.changes ?? 0);
   }
 
   async getTrustedDeviceTokenSummariesByUserId(userId: string): Promise<TrustedDeviceTokenSummary[]> {

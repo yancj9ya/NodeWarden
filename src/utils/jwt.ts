@@ -181,6 +181,7 @@ export async function verifyFileDownloadToken(
 export interface SendFileDownloadClaims {
   sendId: string;
   fileId: string;
+  jti: string;
   exp: number;
 }
 
@@ -194,6 +195,7 @@ export async function createSendFileDownloadToken(
   const payload: SendFileDownloadClaims = {
     sendId,
     fileId,
+    jti: createRefreshToken(),
     exp: now + LIMITS.auth.fileDownloadTokenTtlSeconds,
   };
 
@@ -240,6 +242,15 @@ export async function verifySendFileDownloadToken(
     if (!valid) return null;
 
     const payload: SendFileDownloadClaims = JSON.parse(new TextDecoder().decode(base64UrlDecode(payloadB64)));
+    if (
+      typeof payload.sendId !== 'string' ||
+      typeof payload.fileId !== 'string' ||
+      typeof payload.jti !== 'string' ||
+      !payload.jti ||
+      typeof payload.exp !== 'number'
+    ) {
+      return null;
+    }
     const now = Math.floor(Date.now() / 1000);
     if (payload.exp < now) return null;
 

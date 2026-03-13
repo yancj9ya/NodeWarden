@@ -22,6 +22,15 @@ function toBufferSource(bytes: Uint8Array): ArrayBuffer {
   return new Uint8Array(bytes).buffer;
 }
 
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a[i] ^ b[i];
+  }
+  return diff === 0;
+}
+
 export async function pbkdf2(
   passwordOrBytes: string | Uint8Array,
   saltOrBytes: string | Uint8Array,
@@ -116,7 +125,7 @@ export async function decryptBwFileData(encrypted: Uint8Array, encKey: Uint8Arra
   const mac = encrypted.slice(17, 49);
   const cipher = encrypted.slice(49);
   const expected = await hmacSha256(macKey, concatBytes(iv, cipher));
-  if (bytesToBase64(expected) !== bytesToBase64(mac)) throw new Error('MAC mismatch');
+  if (!constantTimeEqual(expected, mac)) throw new Error('MAC mismatch');
   return decryptAesCbc(cipher, encKey, iv);
 }
 
@@ -147,7 +156,7 @@ export async function decryptBw(cipherString: string, encKey: Uint8Array, macKey
   const parsed = parseCipherString(cipherString);
   if (parsed.type === 2 && macKey && parsed.mac) {
     const expected = await hmacSha256(macKey, concatBytes(parsed.iv, parsed.ct));
-    if (bytesToBase64(expected) !== bytesToBase64(parsed.mac)) throw new Error('MAC mismatch');
+    if (!constantTimeEqual(expected, parsed.mac)) throw new Error('MAC mismatch');
   }
   return decryptAesCbc(parsed.ct, encKey, parsed.iv);
 }
