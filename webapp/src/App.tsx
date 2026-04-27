@@ -25,10 +25,11 @@ import { buildSendShareKey, getSends } from '@/lib/api/send';
 import {
   getCiphers,
   getFolders,
+  repairCipherAttachmentMetadata,
   updateFolder,
 } from '@/lib/api/vault';
 import { silentlyRepairBackupSettingsIfNeeded } from '@/lib/backup-settings-repair';
-import { base64ToBytes, decryptBw, decryptStr } from '@/lib/crypto';
+import { base64ToBytes, decryptBw, decryptStr, encryptBw } from '@/lib/crypto';
 import {
   buildPublicSendUrl,
   deriveSendKeyParts,
@@ -168,6 +169,7 @@ export default function App() {
   const [decryptedFolders, setDecryptedFolders] = useState<VaultFolder[]>([]);
   const [decryptedCiphers, setDecryptedCiphers] = useState<Cipher[]>([]);
   const [decryptedSends, setDecryptedSends] = useState<Send[]>([]);
+  const [vaultInitialDecryptDone, setVaultInitialDecryptDone] = useState(false);
   const sessionRef = useRef<SessionState | null>(initialBootstrap.session);
   const migratedPlainFolderIdsRef = useRef<Set<string>>(new Set());
   const silentRefreshVaultRef = useRef<() => Promise<void>>(async () => {});
@@ -739,37 +741,38 @@ export default function App() {
   const sendsQuery = useQuery({
     queryKey: ['sends', session?.accessToken],
     queryFn: () => getSends(authedFetch),
-    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey,
+    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && (vaultInitialDecryptDone || location === '/sends'),
   });
   const usersQuery = useQuery({
     queryKey: ['admin-users', session?.accessToken],
     queryFn: () => listAdminUsers(authedFetch),
-    enabled: phase === 'app' && profile?.role === 'admin',
+    enabled: phase === 'app' && profile?.role === 'admin' && vaultInitialDecryptDone,
   });
   const invitesQuery = useQuery({
     queryKey: ['admin-invites', session?.accessToken],
     queryFn: () => listAdminInvites(authedFetch),
-    enabled: phase === 'app' && profile?.role === 'admin',
+    enabled: phase === 'app' && profile?.role === 'admin' && vaultInitialDecryptDone,
   });
   const totpStatusQuery = useQuery({
     queryKey: ['totp-status', session?.accessToken],
     queryFn: () => getTotpStatus(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken,
+    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
   });
   const authorizedDevicesQuery = useQuery({
     queryKey: ['authorized-devices', session?.accessToken],
     queryFn: () => getAuthorizedDevices(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken,
+    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
   });
 
   useEffect(() => {
     if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey) return;
+    if (!vaultInitialDecryptDone) return;
     if (!profile?.role || profile.role !== 'admin') return;
     if (repairAttemptRef.current === session.accessToken) return;
 
     repairAttemptRef.current = session.accessToken;
     void silentlyRepairBackupSettingsIfNeeded(session, profile);
-  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey, profile]);
+  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey, profile, vaultInitialDecryptDone]);
 
   useEffect(() => {
     if (session?.accessToken) return;
@@ -781,9 +784,10 @@ export default function App() {
       setDecryptedFolders([]);
       setDecryptedCiphers([]);
       setDecryptedSends([]);
+      setVaultInitialDecryptDone(false);
       return;
     }
-    if (!foldersQuery.data || !ciphersQuery.data || !sendsQuery.data) return;
+    if (!foldersQuery.data || !ciphersQuery.data) return;
 
     let active = true;
     (async () => {
@@ -802,6 +806,34 @@ export default function App() {
             // Backward-compatibility: some records may already be plain text.
             return value;
           }
+        };
+        const sameBytes = (a: Uint8Array, b: Uint8Array) => {
+          if (a.byteLength !== b.byteLength) return false;
+          for (let i = 0; i < a.byteLength; i += 1) {
+            if (a[i] !== b[i]) return false;
+          }
+          return true;
+        };
+        const decryptFieldWithSource = async (
+          value: string | null | undefined,
+          itemEnc: Uint8Array,
+          itemMac: Uint8Array
+        ): Promise<{ text: string; source: 'item' | 'user' | 'plain' }> => {
+          const raw = String(value || '').trim();
+          if (!raw) return { text: '', source: 'plain' };
+          try {
+            return { text: await decryptStr(raw, itemEnc, itemMac), source: 'item' };
+          } catch {
+            // 继续尝试旧 user key 数据。
+          }
+          if (!sameBytes(itemEnc, encKey) || !sameBytes(itemMac, macKey)) {
+            try {
+              return { text: await decryptStr(raw, encKey, macKey), source: 'user' };
+            } catch {
+              // 保留原文。
+            }
+          }
+          return { text: raw, source: 'plain' };
         };
 
         const folders = await Promise.all(
@@ -908,51 +940,121 @@ export default function App() {
             }
             if (Array.isArray(cipher.attachments)) {
               nextCipher.attachments = await Promise.all(
-                cipher.attachments.map(async (attachment) => ({
-                  ...attachment,
-                  decFileName: await decryptField(attachment.fileName || '', itemEnc, itemMac),
-                }))
+                cipher.attachments.map(async (attachment) => {
+                  const attachmentId = String(attachment?.id || '').trim();
+                  const fileNameResult = await decryptFieldWithSource(attachment.fileName || '', itemEnc, itemMac);
+                  const metadata: { fileName?: string; key?: string | null } = {};
+
+                  if (attachmentId && fileNameResult.source === 'user') {
+                    metadata.fileName = await encryptBw(new TextEncoder().encode(fileNameResult.text), itemEnc, itemMac);
+                  }
+
+                  const attachmentKey = String(attachment?.key || '').trim();
+                  if (
+                    attachmentId &&
+                    attachmentKey &&
+                    looksLikeCipherString(attachmentKey) &&
+                    (!sameBytes(itemEnc, encKey) || !sameBytes(itemMac, macKey))
+                  ) {
+                    try {
+                      await decryptBw(attachmentKey, itemEnc, itemMac);
+                    } catch {
+                      try {
+                        const rawAttachmentKey = await decryptBw(attachmentKey, encKey, macKey);
+                        if (rawAttachmentKey.length >= 64) {
+                          metadata.key = await encryptBw(rawAttachmentKey, itemEnc, itemMac);
+                        }
+                      } catch {
+                        // 文件下载时会继续尝试旧格式。
+                      }
+                    }
+                  }
+
+                  if (attachmentId && Object.keys(metadata).length > 0) {
+                    void repairCipherAttachmentMetadata(authedFetch, cipher.id, attachmentId, metadata);
+                  }
+
+                  return {
+                    ...attachment,
+                    decFileName: fileNameResult.text,
+                  };
+                })
               );
             }
             return nextCipher;
           })
         );
 
-        const sends = await Promise.all(
-          sendsQuery.data.map(async (send) => {
-            const nextSend: Send = { ...send };
-            try {
-              if (send.key) {
-                const sendKeyRaw = await decryptBw(send.key, encKey, macKey);
-                const derived = await deriveSendKeyParts(sendKeyRaw);
-                nextSend.decName = await decryptField(send.name || '', derived.enc, derived.mac);
-                nextSend.decNotes = await decryptField(send.notes || '', derived.enc, derived.mac);
-                nextSend.decText = await decryptField(send.text?.text || '', derived.enc, derived.mac);
-                if (send.file?.fileName) {
-                  const decFileName = await decryptField(send.file.fileName, derived.enc, derived.mac);
-                  nextSend.file = {
-                    ...(send.file || {}),
-                    fileName: decFileName || send.file.fileName,
-                  };
-                }
-                const shareKey = await buildSendShareKey(send.key, session.symEncKey!, session.symMacKey!);
-                nextSend.decShareKey = shareKey;
-                nextSend.shareUrl = buildPublicSendUrl(window.location.origin, send.accessId, shareKey);
-              } else {
-                nextSend.decName = '';
-                nextSend.decNotes = '';
-                nextSend.decText = '';
-              }
-            } catch {
-              nextSend.decName = t('txt_decrypt_failed');
-            }
-            return nextSend;
-          })
-        );
-
         if (!active) return;
         setDecryptedFolders(folders);
         setDecryptedCiphers(ciphers);
+        setVaultInitialDecryptDone(true);
+      } catch (error) {
+        if (!active) return;
+        pushToast('error', error instanceof Error ? error.message : t('txt_decrypt_failed_2'));
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [session?.symEncKey, session?.symMacKey, foldersQuery.data, ciphersQuery.data]);
+
+  useEffect(() => {
+    if (!session?.symEncKey || !session?.symMacKey) {
+      setDecryptedSends([]);
+      return;
+    }
+    if (!sendsQuery.data) return;
+
+    let active = true;
+    (async () => {
+      try {
+        const encKey = base64ToBytes(session.symEncKey!);
+        const macKey = base64ToBytes(session.symMacKey!);
+        const decryptField = async (
+          value: string | null | undefined,
+          fieldEnc: Uint8Array = encKey,
+          fieldMac: Uint8Array = macKey
+        ): Promise<string> => {
+          if (!value || typeof value !== 'string') return '';
+          try {
+            return await decryptStr(value, fieldEnc, fieldMac);
+          } catch {
+            return value;
+          }
+        };
+        const sends = await Promise.all(sendsQuery.data.map(async (send) => {
+          const nextSend: Send = { ...send };
+          try {
+            if (send.key) {
+              const sendKeyRaw = await decryptBw(send.key, encKey, macKey);
+              const derived = await deriveSendKeyParts(sendKeyRaw);
+              nextSend.decName = await decryptField(send.name || '', derived.enc, derived.mac);
+              nextSend.decNotes = await decryptField(send.notes || '', derived.enc, derived.mac);
+              nextSend.decText = await decryptField(send.text?.text || '', derived.enc, derived.mac);
+              if (send.file?.fileName) {
+                const decFileName = await decryptField(send.file.fileName, derived.enc, derived.mac);
+                nextSend.file = {
+                  ...(send.file || {}),
+                  fileName: decFileName || send.file.fileName,
+                };
+              }
+              const shareKey = await buildSendShareKey(send.key, session.symEncKey!, session.symMacKey!);
+              nextSend.decShareKey = shareKey;
+              nextSend.shareUrl = buildPublicSendUrl(window.location.origin, send.accessId, shareKey);
+            } else {
+              nextSend.decName = '';
+              nextSend.decNotes = '';
+              nextSend.decText = '';
+            }
+          } catch {
+            nextSend.decName = t('txt_decrypt_failed');
+          }
+          return nextSend;
+        }));
+
+        if (!active) return;
         setDecryptedSends(sends);
       } catch (error) {
         if (!active) return;
@@ -963,7 +1065,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [session?.symEncKey, session?.symMacKey, foldersQuery.data, ciphersQuery.data, sendsQuery.data]);
+  }, [session?.symEncKey, session?.symMacKey, sendsQuery.data]);
 
   useEffect(() => {
     if (!session?.symEncKey || !session?.symMacKey || !foldersQuery.data?.length) return;
@@ -997,7 +1099,7 @@ export default function App() {
   silentRefreshVaultRef.current = refreshVaultSilently;
 
   useEffect(() => {
-    if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey) return;
+    if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey || !vaultInitialDecryptDone) return;
 
     let disposed = false;
     let socket: WebSocket | null = null;
@@ -1123,7 +1225,7 @@ export default function App() {
         }
       }
     };
-  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey]);
+  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey, vaultInitialDecryptDone]);
 
   const vaultSendActions = useVaultSendActions({
     authedFetch,
@@ -1163,6 +1265,7 @@ export default function App() {
   });
 
   refreshAuthorizedDevicesRef.current = async () => {
+    if (!vaultInitialDecryptDone) return;
     await authorizedDevicesQuery.refetch();
   };
 
