@@ -21,7 +21,9 @@ import { copyTextToClipboard as copyTextWithFeedback } from '@/lib/clipboard';
 import { calcTotpNow } from '@/lib/crypto';
 import { t } from '@/lib/i18n';
 import type { Cipher } from '@/lib/types';
-import { isCipherVisibleInNormalVault, websiteIconUrl } from '@/components/vault/vault-page-helpers';
+import LoadingState from '@/components/LoadingState';
+import WebsiteIcon from '@/components/vault/WebsiteIcon';
+import { isCipherVisibleInNormalVault } from '@/components/vault/vault-page-helpers';
 
 interface TotpCodesPageProps {
   ciphers: Cipher[];
@@ -33,8 +35,7 @@ const TOTP_PERIOD_SECONDS = 30;
 const TOTP_RING_RADIUS = 14;
 const TOTP_RING_CIRCUMFERENCE = 2 * Math.PI * TOTP_RING_RADIUS;
 const TOTP_ORDER_STORAGE_KEY = 'nodewarden.totp-order';
-const failedIconHosts = new Set<string>();
-
+const TOTP_REFRESH_BATCH_SIZE = 16;
 function getTotpTimeState(): { windowId: number; remain: number } {
   const epoch = Math.floor(Date.now() / 1000);
   return {
@@ -50,70 +51,8 @@ function formatTotp(code: string): string {
   return `${code.slice(0, 3)} ${code.slice(3, 6)}`;
 }
 
-function firstCipherUri(cipher: Cipher): string {
-  const uris = cipher.login?.uris || [];
-  for (const uri of uris) {
-    const raw = uri.decUri || uri.uri || '';
-    if (raw.trim()) return raw.trim();
-  }
-  return '';
-}
-
-function hostFromUri(uri: string): string {
-  if (!uri.trim()) return '';
-  try {
-    const normalized = /^https?:\/\//i.test(uri) ? uri : `https://${uri}`;
-    return new URL(normalized).hostname || '';
-  } catch {
-    return '';
-  }
-}
-
 function TotpListIcon({ cipher }: { cipher: Cipher }) {
-  const host = useMemo(() => hostFromUri(firstCipherUri(cipher)), [cipher]);
-  const [errored, setErrored] = useState(() => (host ? failedIconHosts.has(host) : false));
-  const [loaded, setLoaded] = useState(false);
-  const markIconError = () => {
-    if (host) failedIconHosts.add(host);
-    setErrored(true);
-  };
-  const syncCachedIconState = (img: HTMLImageElement | null) => {
-    if (!img || !img.complete) return;
-    if (img.naturalWidth > 0) {
-      setLoaded(true);
-      return;
-    }
-    markIconError();
-  };
-  useEffect(() => {
-    setErrored(host ? failedIconHosts.has(host) : false);
-    setLoaded(false);
-  }, [host]);
-
-  if (host && !errored) {
-    return (
-      <span className="list-icon-stack">
-        <span className={`list-icon-fallback ${loaded ? 'hidden' : ''}`}>
-          <Globe size={18} />
-        </span>
-        <img
-          className={`list-icon ${loaded ? 'loaded' : ''}`}
-          src={websiteIconUrl(host)}
-          alt=""
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          ref={syncCachedIconState}
-          onLoad={() => setLoaded(true)}
-          onError={markIconError}
-        />
-      </span>
-    );
-  }
-  return (
-    <span className="list-icon-fallback">
-      <Globe size={18} />
-    </span>
-  );
+  return <WebsiteIcon cipher={cipher} fallback={<Globe size={18} />} />;
 }
 
 interface SortableTotpRowProps {
@@ -294,17 +233,41 @@ export default function TotpCodesPage(props: TotpCodesPageProps) {
 
     const refreshCodes = async () => {
       const runId = ++activeRun;
-      const entries = await Promise.all(
-        totpItems.map(async (cipher) => {
-          try {
-            const next = await calcTotpNow(cipher.login?.decTotp || '');
-            return [cipher.id, next?.code || null] as const;
-          } catch {
-            return [cipher.id, null] as const;
-          }
-        })
-      );
-      if (!stopped && runId === activeRun) setTotpCodes(Object.fromEntries(entries));
+      const nextCodes: Record<string, string | null> = {};
+      for (let start = 0; start < totpItems.length; start += TOTP_REFRESH_BATCH_SIZE) {
+        if (stopped || runId !== activeRun) return;
+        const batch = totpItems.slice(start, start + TOTP_REFRESH_BATCH_SIZE);
+        const entries = await Promise.all(
+          batch.map(async (cipher) => {
+            try {
+              const next = await calcTotpNow(cipher.login?.decTotp || '');
+              return [cipher.id, next?.code || null] as const;
+            } catch {
+              return [cipher.id, null] as const;
+            }
+          })
+        );
+        for (const [id, code] of entries) nextCodes[id] = code;
+        if (start + TOTP_REFRESH_BATCH_SIZE < totpItems.length) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+      if (stopped || runId !== activeRun) return;
+      setTotpCodes((prev) => {
+        let changed = false;
+        const next: Record<string, string | null> = { ...prev };
+        for (const id of Object.keys(next)) {
+          if (id in nextCodes) continue;
+          delete next[id];
+          changed = true;
+        }
+        for (const [id, code] of Object.entries(nextCodes)) {
+          if (next[id] === code) continue;
+          next[id] = code;
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
     };
 
     const tick = () => {
@@ -365,6 +328,7 @@ export default function TotpCodesPage(props: TotpCodesPageProps) {
           className="totp-codes-list"
           style={{ '--totp-columns': String(columnCount) } as Record<string, string>}
         >
+          {!totpItems.length && props.loading && <LoadingState lines={6} />}
           {!totpItems.length && !props.loading && <div className="empty">{t('txt_no_verification_codes')}</div>}
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sortableTotpItems} strategy={rectSortingStrategy}>
